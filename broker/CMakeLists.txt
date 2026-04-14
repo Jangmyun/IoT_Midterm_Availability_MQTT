@@ -22,6 +22,7 @@ FetchContent_MakeAvailable(nlohmann_json)
 # ── Common library (shared by core & edge) ────────────────────────────────────
 add_library(broker_common STATIC
     src/common/mqtt_json.cpp
+    src/common/connection_table_manager.cpp
 )
 target_include_directories(broker_common PUBLIC include)
 target_link_libraries(broker_common PUBLIC nlohmann_json::nlohmann_json)
