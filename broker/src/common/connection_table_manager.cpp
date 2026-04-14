@@ -75,3 +75,48 @@ std::optional<NodeEntry> ConnectionTableManager::findNode(const char* id) const 
     }
     return std::nullopt;
 }
+
+// Link =====================================================
+
+// 
+bool ConnectionTableManager::addLink(const LinkEntry& link) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // (from, to) 쌍이 이미 존재하면 RTT만 갱신
+    for (int i = 0; i < table_.link_count; i++) {
+        if (std::strncmp(table_.links[i].from_id, link.from_id, UUID_LEN) == 0 &&
+            std::strncmp(table_.links[i].to_id, link.to_id, UUID_LEN) == 0) {
+            table_.links[i].rtt_ms = link.rtt_ms;
+            bumpVersion();
+            return true;
+        }
+    }
+    if (table_.link_count >= MAX_LINKS) return false;
+    table_.links[table_.link_count++] = link;
+    bumpVersion();
+    return true;
+}
+
+
+bool ConnectionTableManager::updateLinkRtt(const char* from_id, const char* to_id, float rtt_ms) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (int i = 0; i < table_.link_count; i++) {
+        if (std::strncmp(table_.links[i].from_id, from_id, UUID_LEN) == 0 &&
+            std::strncmp(table_.links[i].to_id, to_id, UUID_LEN) == 0) {
+            table_.links[i].rtt_ms = rtt_ms;
+            bumpVersion();
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<LinkEntry> ConnectionTableManager::findLink(const char* from_id, const char* to_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (int i = 0; i < table_.link_count; i++) {
+        if (std::strncmp(table_.links[i].from_id, from_id, UUID_LEN) == 0 &&
+            std::strncmp(table_.links[i].to_id, to_id, UUID_LEN) == 0) {
+            return table_.links[i];
+        }
+    }
+    return std::nullopt;
+}
