@@ -120,3 +120,34 @@ std::optional<LinkEntry> ConnectionTableManager::findLink(const char* from_id, c
     }
     return std::nullopt;
 }
+
+// Core ID =====================================================
+
+
+void ConnectionTableManager::setActiveCoreId(const char* id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::strncpy(table_.active_core_id, id, UUID_LEN - 1);
+    table_.active_core_id[UUID_LEN - 1] = '\0';
+    bumpVersion();
+}
+
+void ConnectionTableManager::setBackupCoreId(const char* id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::strncpy(table_.backup_core_id, id, UUID_LEN - 1);
+    table_.backup_core_id[UUID_LEN - 1] = '\0';
+    bumpVersion();
+}
+
+// Serialization =====================================================
+
+ConnectionTable ConnectionTableManager::snapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return table_;
+}
+
+// Private =====================================================
+
+void ConnectionTableManager::bumpVersion() {
+    table_.version++;
+    set_now(table_.last_update);
+}
