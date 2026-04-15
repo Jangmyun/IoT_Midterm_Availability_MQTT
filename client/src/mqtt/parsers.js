@@ -48,12 +48,15 @@ export function parseConnectionTable(raw) {
  * @param {string} raw - JSON 문자열
  * @returns {{ msg_id, type, timestamp, priority, source, target, route, delivery, payload } | null}
  */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function parseMqttMessage(raw) {
   try {
     const j = JSON.parse(raw);
 
     // 필수 필드 확인 (C++ 파서 기준)
-    if (!j.msg_id || !j.type) return null;
+    if (!j.msg_id || !UUID_RE.test(j.msg_id)) return null;
+    if (!j.type) return null;
 
     return {
       msg_id:    j.msg_id,
