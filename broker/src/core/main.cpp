@@ -18,5 +18,15 @@
 #define TOPIC_CORE_WILL_ALL    "campus/will/core/#"
 #define TOPIC_CT_SYNC          "_core/sync/connection_table"
 #define TOPIC_ELECTION_ALL     "_core/election/#"
+
+// Global State =====================================================
+static volatile bool g_running = true;
+
+struct CoreContext {
+    const char* core_id;
+    ConnectionTableManager* ct_manager;
+};
+
+static void handle_signal(int) { g_running = false; }
     return 0;
 }
