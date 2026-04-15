@@ -170,3 +170,4 @@ $RECYCLE.BIN/
 # End of https://www.toptal.com/developers/gitignore/api/cmake,c,c++,macos,windows,linux
 
 broker/build/*broker*
+broker/build/test_*
