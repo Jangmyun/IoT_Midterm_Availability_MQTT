@@ -80,11 +80,11 @@ static void on_message(struct mosquitto* mosq, void* userdata,
 
 int main(int argc, char* argv[]) {
     // 인수: <broker_host> <broker_port> [backup_core_id] [backup_ip] [backup_port]
-    const char* broker_host    = (argc > 1) ? argv[1] : "127.0.0.1";
-    int         broker_port    = (argc > 2) ? atoi(argv[2]) : 1883;
+    const char* broker_host = (argc > 1) ? argv[1] : "127.0.0.1";
+    int         broker_port = (argc > 2) ? atoi(argv[2]) : 1883;
     const char* backup_core_id = (argc > 3) ? argv[3] : "";
-    const char* backup_ip      = (argc > 4) ? argv[4] : "";
-    int         backup_port    = (argc > 5) ? atoi(argv[5]) : 1883;
+    const char* backup_ip = (argc > 4) ? argv[4] : "";
+    int         backup_port = (argc > 5) ? atoi(argv[5]) : 1883;
 
     // core_id: 기동 시 UUID 생성
     char core_id[UUID_LEN];
