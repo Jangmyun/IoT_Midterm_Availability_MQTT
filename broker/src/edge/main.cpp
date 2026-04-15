@@ -32,5 +32,29 @@ struct EdgeContext {
 };
 
 static void handle_signal(int) { g_running = false; }
+
+// core 방향 outbound IP 감지 (실제 패킷 전송 없음)
+static bool get_outbound_ip(const char* dest_ip, int dest_port, char* out, size_t len) {
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) return false;
+
+    sockaddr_in dest{};
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons((uint16_t)dest_port);
+    dest.sin_addr.s_addr = inet_addr(dest_ip);
+
+    if (connect(sock, (sockaddr*)&dest, sizeof(dest)) < 0) {
+        close(sock);
+        return false;
+    }
+
+    sockaddr_in local{};
+    socklen_t   local_len = sizeof(local);
+    getsockname(sock, (sockaddr*)&local, &local_len);
+    close(sock);
+
+    inet_ntop(AF_INET, &local.sin_addr, out, (socklen_t)len);
+    return true;
+}
     return 0;
 }
