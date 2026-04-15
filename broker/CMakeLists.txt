@@ -56,3 +56,9 @@ foreach(TARGET core_broker edge_broker)
         PkgConfig::CJSON
     )
 endforeach()
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+enable_testing()
+add_executable(test_json test/test_json.cpp)
+target_link_libraries(test_json PRIVATE broker_common)
+add_test(NAME test_json COMMAND test_json)
