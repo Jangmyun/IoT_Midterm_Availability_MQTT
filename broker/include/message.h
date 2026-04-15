@@ -74,3 +74,22 @@ typedef struct {
     DeliveryInfo delivery;
     EventPayload payload;
 } MqttMessage;
+
+// ── MQTT Topics: Shared ───────────────────────────────────────────────────────
+#define TOPIC_TOPOLOGY         "campus/monitor/topology"      /* M-04 Core→Node retained */
+#define TOPIC_CORE_WILL_ALL    "campus/will/core/#"           /* W-01 subscribe */
+
+// ── MQTT Topics: Core ─────────────────────────────────────────────────────────
+#define TOPIC_LWT_CORE_PREFIX  "campus/will/core/"            /* W-01 LWT publish prefix */
+#define TOPIC_DATA_ALL         "campus/data/#"                /* D-01/D-02 subscribe */
+#define TOPIC_RELAY_ALL        "campus/relay/#"               /* R-01 subscribe */
+#define TOPIC_NODE_STATUS_ALL  "campus/monitor/status/#"      /* M-03 subscribe */
+#define TOPIC_NODE_WILL_ALL    "campus/will/node/#"           /* W-02 subscribe */
+#define TOPIC_CT_SYNC          "_core/sync/connection_table"  /* C-01 Core↔Core */
+#define TOPIC_ELECTION_ALL     "_core/election/#"             /* C-03/C-04 subscribe */
+
+// ── MQTT Topics: Edge ─────────────────────────────────────────────────────────
+#define TOPIC_LWT_NODE_PREFIX  "campus/will/node/"            /* W-02 LWT publish prefix */
+#define TOPIC_STATUS_PREFIX    "campus/monitor/status/"       /* M-03 publish prefix */
+#define TOPIC_PING_PREFIX      "campus/monitor/ping/"         /* M-01 subscribe prefix */
+#define TOPIC_PONG_PREFIX      "campus/monitor/pong/"         /* M-02 publish prefix */
