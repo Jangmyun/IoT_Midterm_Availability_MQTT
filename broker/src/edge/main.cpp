@@ -13,14 +13,6 @@
 #include "message.h"
 #include "uuid.h"
 
-// constant TOPICs =====================================================
-#define TOPIC_TOPOLOGY         "campus/monitor/topology"
-#define TOPIC_CORE_WILL_ALL    "campus/will/core/#"
-#define TOPIC_LWT_NODE_PREFIX  "campus/will/node/"
-#define TOPIC_STATUS_PREFIX    "campus/monitor/status/"
-#define TOPIC_PING_PREFIX      "campus/monitor/ping/"
-#define TOPIC_PONG_PREFIX      "campus/monitor/pong/"
-
 // Global State =====================================================
 static volatile bool g_running = true;
 
