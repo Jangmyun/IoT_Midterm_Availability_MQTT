@@ -86,5 +86,97 @@ static void on_message(struct mosquitto* mosq, void* userdata,
     // 이벤트 데이터 / Relay — TODO: msg_id 중복 필터링 후 Client 전달
 }
 
+// main =====================================================
+
+int main(int argc, char* argv[]) {
+    // 인수: <core_id> <broker_host> <broker_port> [backup_core_id] [backup_ip] [backup_port]
+    const char* core_id = (argc > 1) ? argv[1] : "core-a";
+    const char* broker_host = (argc > 2) ? argv[2] : "127.0.0.1";
+    int         broker_port = (argc > 3) ? atoi(argv[3]) : 1883;
+    const char* backup_core_id = (argc > 4) ? argv[4] : "";
+    const char* backup_ip = (argc > 5) ? argv[5] : "";
+    int         backup_port = (argc > 6) ? atoi(argv[6]) : 1883;
+
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    // 1. mosquitto 라이브러리 초기화
+    mosquitto_lib_init();
+
+    // 2. ConnectionTable 초기화 및 self(Core) 등록
+    //    on_connect에서 CT를 바로 게시하므로 connect 전에 준비
+    ConnectionTableManager ct_manager;
+    ct_manager.init(core_id, backup_core_id);
+    {
+        NodeEntry self = {};
+        strncpy(self.id, core_id, UUID_LEN - 1);
+        self.role = NODE_ROLE_CORE;
+        strncpy(self.ip, broker_host, IP_LEN - 1);
+        self.port = (uint16_t)broker_port;
+        self.status = NODE_STATUS_ONLINE;
+        self.hop_to_core = 0;
+        ct_manager.addNode(self);
+    }
+
+    // 3. mosquitto 클라이언트 생성
+    CoreContext ctx = { core_id, &ct_manager };
+    struct mosquitto* mosq = mosquitto_new(core_id, true, &ctx);
+    if (!mosq) {
+        fprintf(stderr, "[core] mosquitto_new failed\n");
+        mosquitto_lib_cleanup();
+        return 1;
+    }
+
+    // 4. LWT 설정 (W-01): 비정상 종료 시 backup core IP:port 전파
+    {
+        MqttMessage lwt = {};
+        strncpy(lwt.msg_id, core_id, UUID_LEN - 1);
+        lwt.type = MSG_TYPE_LWT_CORE;
+        lwt.source.role = NODE_ROLE_CORE;
+        strncpy(lwt.source.id, core_id, UUID_LEN - 1);
+        lwt.target.role = NODE_ROLE_CORE;
+        strncpy(lwt.target.id, backup_core_id, UUID_LEN - 1);
+        snprintf(lwt.payload.description, DESCRIPTION_LEN, "%s:%d", backup_ip, backup_port);
+
+        char lwt_topic[128];
+        snprintf(lwt_topic, sizeof(lwt_topic), "%s%s", TOPIC_LWT_CORE_PREFIX, core_id);
+
+        std::string lwt_json = mqtt_message_to_json(lwt);
+        mosquitto_will_set(mosq, lwt_topic,
+            (int)lwt_json.size(), lwt_json.c_str(), 1, false);
+    }
+
+    // 5. 콜백 등록
+    mosquitto_connect_callback_set(mosq, on_connect);
+    mosquitto_message_callback_set(mosq, on_message);
+    mosquitto_disconnect_callback_set(mosq, on_disconnect);
+
+    // 6. 브로커 연결 (auto-reconnect 활성화)
+    mosquitto_reconnect_delay_set(mosq, 2, 30, false);
+    int rc = mosquitto_connect(mosq, broker_host, broker_port, /*keepalive=*/60);
+    if (rc != MOSQ_ERR_SUCCESS) {
+        fprintf(stderr, "[core] mosquitto_connect failed: %s\n", mosquitto_strerror(rc));
+        mosquitto_destroy(mosq);
+        mosquitto_lib_cleanup();
+        return 1;
+    }
+
+    // 7. 이벤트 루프 시작 (별도 스레드)
+    mosquitto_loop_start(mosq);
+
+    printf("[core] %s running on %s:%d  (backup: %s)\n",
+        core_id, broker_host, broker_port,
+        backup_core_id[0] ? backup_core_id : "(none)");
+
+    while (g_running) {
+        struct timespec ts = { 1, 0 };
+        nanosleep(&ts, nullptr);
+    }
+
+    // 8. 정상 종료
+    printf("[core] shutting down\n");
+    mosquitto_loop_stop(mosq, true);
+    mosquitto_destroy(mosq);
+    mosquitto_lib_cleanup();
     return 0;
 }
