@@ -60,5 +60,30 @@ static void on_disconnect(struct mosquitto* /*mosq*/, void* /*userdata*/, int rc
     printf("[core] disconnected (rc=%d)%s\n", rc,
         rc != 0 ? " — waiting for reconnect" : "");
 }
+
+static void on_message(struct mosquitto* mosq, void* userdata,
+    const struct mosquitto_message* msg) {
+    auto* ctx = static_cast<CoreContext*>(userdata);
+
+    // Node 비정상 종료 LWT (W-02): OFFLINE 마킹 후 CT 브로드캐스트
+    if (strncmp(msg->topic, "campus/will/node/", 17) == 0) {
+        const char* node_id = msg->topic + 17;
+        if (ctx->ct_manager->setNodeStatus(node_id, NODE_STATUS_OFFLINE)) {
+            ConnectionTable ct = ctx->ct_manager->snapshot();
+            std::string json = connection_table_to_json(ct);
+            mosquitto_publish(mosq, nullptr, TOPIC_TOPOLOGY,
+                (int)json.size(), json.c_str(), 1, true);
+            printf("[core] node offline: %s  (ct.version=%d)\n", node_id, ct.version);
+        }
+        return;
+    }
+
+    // Core 간 CT 동기화 (C-01) — TODO: peer CT merge
+    if (strcmp(msg->topic, TOPIC_CT_SYNC) == 0) {
+        return;
+    }
+
+    // 이벤트 데이터 / Relay — TODO: msg_id 중복 필터링 후 Client 전달
+}
     return 0;
 }
