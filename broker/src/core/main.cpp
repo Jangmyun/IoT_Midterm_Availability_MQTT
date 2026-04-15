@@ -7,6 +7,7 @@
 #include "connection_table_manager.h"
 #include "mqtt_json.h"
 #include "message.h"
+#include "uuid.h"
 
 // constant TOPICs 
 #define TOPIC_LWT_CORE_PREFIX  "campus/will/core/"
@@ -89,13 +90,16 @@ static void on_message(struct mosquitto* mosq, void* userdata,
 // main =====================================================
 
 int main(int argc, char* argv[]) {
-    // 인수: <core_id> <broker_host> <broker_port> [backup_core_id] [backup_ip] [backup_port]
-    const char* core_id = (argc > 1) ? argv[1] : "core-a";
-    const char* broker_host = (argc > 2) ? argv[2] : "127.0.0.1";
-    int         broker_port = (argc > 3) ? atoi(argv[3]) : 1883;
-    const char* backup_core_id = (argc > 4) ? argv[4] : "";
-    const char* backup_ip = (argc > 5) ? argv[5] : "";
-    int         backup_port = (argc > 6) ? atoi(argv[6]) : 1883;
+    // 인수: <broker_host> <broker_port> [backup_core_id] [backup_ip] [backup_port]
+    const char* broker_host    = (argc > 1) ? argv[1] : "127.0.0.1";
+    int         broker_port    = (argc > 2) ? atoi(argv[2]) : 1883;
+    const char* backup_core_id = (argc > 3) ? argv[3] : "";
+    const char* backup_ip      = (argc > 4) ? argv[4] : "";
+    int         backup_port    = (argc > 5) ? atoi(argv[5]) : 1883;
+
+    // core_id: 기동 시 UUID 생성
+    char core_id[UUID_LEN];
+    uuid_generate(core_id);
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
