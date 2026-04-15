@@ -55,5 +55,10 @@ static void on_connect(struct mosquitto* mosq, void* userdata, int rc) {
         (int)json.size(), json.c_str(), 1, /*retain=*/true);
     printf("[core] topology published (version=%d)\n", ct.version);
 }
+
+static void on_disconnect(struct mosquitto* /*mosq*/, void* /*userdata*/, int rc) {
+    printf("[core] disconnected (rc=%d)%s\n", rc,
+        rc != 0 ? " — waiting for reconnect" : "");
+}
     return 0;
 }
