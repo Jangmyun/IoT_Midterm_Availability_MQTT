@@ -28,5 +28,32 @@ struct CoreContext {
 };
 
 static void handle_signal(int) { g_running = false; }
+
+// Callbacks =====================================================
+
+static void on_connect(struct mosquitto* mosq, void* userdata, int rc) {
+    if (rc != 0) {
+        fprintf(stderr, "[core] connect failed (rc=%d)\n", rc);
+        return;
+    }
+    printf("[core] connected\n");
+
+    // 토픽 구독
+    mosquitto_subscribe(mosq, nullptr, TOPIC_DATA_ALL, 1);
+    mosquitto_subscribe(mosq, nullptr, TOPIC_RELAY_ALL, 1);
+    mosquitto_subscribe(mosq, nullptr, TOPIC_NODE_STATUS_ALL, 1);
+    mosquitto_subscribe(mosq, nullptr, TOPIC_NODE_WILL_ALL, 1);
+    mosquitto_subscribe(mosq, nullptr, TOPIC_CORE_WILL_ALL, 1);
+    mosquitto_subscribe(mosq, nullptr, TOPIC_CT_SYNC, 1);
+    mosquitto_subscribe(mosq, nullptr, TOPIC_ELECTION_ALL, 1);
+
+    // 초기 ConnectionTable 스냅샷을 Retained Message로 게시
+    auto* ctx = static_cast<CoreContext*>(userdata);
+    ConnectionTable ct = ctx->ct_manager->snapshot();
+    std::string json = connection_table_to_json(ct);
+    mosquitto_publish(mosq, nullptr, TOPIC_TOPOLOGY,
+        (int)json.size(), json.c_str(), 1, /*retain=*/true);
+    printf("[core] topology published (version=%d)\n", ct.version);
+}
     return 0;
 }
