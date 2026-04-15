@@ -459,6 +459,48 @@ typedef struct {
 
 ---
 
+## 14. 현재 개발 진행도 (2026-04-14 기준)
+
+### 14.1 구현 완료 항목
+
+| 구성요소                                                                                                                | 파일                                             |
+| ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| ConnectionTable C 구조체 + 상수 (MAX_NODES=64, MAX_LINKS=256)                                                           | `broker/include/connection_table.h`              |
+| ConnectionTableManager — thread-safe CRUD (mutex, addNode, updateNode, setNodeStatus, addLink, updateLinkRtt, snapshot) | `broker/src/common/connection_table_manager.cpp` |
+| JSON 직렬화/역직렬화 양방향 (CT + MqttMessage, enum 변환 포함)                                                          | `broker/src/common/mqtt_json.cpp`                |
+| UUID 생성기 (RFC 4122 v4, thread-local)                                                                                 | `broker/include/uuid.h`                          |
+| MqttMessage 구조체 + 토픽 상수 19개 정의                                                                                | `broker/include/message.h`                       |
+| Core 기본 뼈대 — 연결, 7개 토픽 구독, CT Retained 발행, Node LWT(W-02) 수신                                             | `broker/src/core/main.cpp`                       |
+| Edge 기본 뼈대 — Core 연결, CT(M-04) 수신, Ping/Pong(M-01/M-02) 응답                                                    | `broker/src/edge/main.cpp`                       |
+| nlohmann/json 3.11.3 FetchContent, CMake 빌드 시스템                                                                    | `broker/CMakeLists.txt`                          |
+
+### 14.2 미완료 항목
+
+| 구성요소                                                  | 관련 FR      |
+| --------------------------------------------------------- | ------------ |
+| Core: msg_id 중복 필터링 (`unordered_set`)                | FR-02        |
+| Core: 이벤트 수신 후 Client 토픽으로 publish              | FR-03        |
+| Core: Node LWT 수신 후 `campus/alert/node_down/<id>` 발행 | FR-06        |
+| Edge: `mosq_local` (로컬 CCTV 수신) 인스턴스 추가         | FR-01, FR-07 |
+| Edge: `mosq_backup` (Backup Core 연결 유지) 인스턴스 추가 | FR-05        |
+| Edge: Core LWT 파싱 후 Backup Core로 failover             | FR-05        |
+| Edge: Store-and-Forward FIFO 큐                           | FR-07        |
+| Edge: CT 수신 후 인접 Node RTT 측정                       | FR-08        |
+| Edge: RTT + hop_to_core 기반 Relay 경로 선택              | FR-08        |
+| Web Client: MQTT.js WebSocket 연결 + 이벤트 로그          | FR-11        |
+| Web Client: Cytoscape 토폴로지 실시간 그래프              | FR-12        |
+
+### 14.3 재수립된 개발 순서
+
+| Phase | 목표                                               | 관련 FR             | 검증 기준                                                    |
+| ----- | -------------------------------------------------- | ------------------- | ------------------------------------------------------------ |
+| **1** | End-to-End 정상 동작 (CCTV → Edge → Core → Client) | FR-02, FR-03, FR-06 | mosquitto_pub → Edge → Core → mosquitto_sub 이벤트 수신 확인 |
+| **2** | Core 장애 대응 + Store-and-Forward                 | FR-04, FR-05, FR-07 | Core 강제 종료 → Backup 전환 → 재연결 후 큐 flush 확인       |
+| **3** | RTT 측정 + Relay 경로 선택                         | FR-08               | 다수 Edge 실행 → Ping/Pong 교환 → Relay 경로 로그 확인       |
+| **4** | Web Client 이벤트 로그 + 토폴로지 그래프           | FR-11, FR-12        | 브라우저에서 실시간 이벤트 + 그래프 업데이트 확인            |
+
+---
+
 ## 13. 부록
 
 ### 13.1 팀 정보
