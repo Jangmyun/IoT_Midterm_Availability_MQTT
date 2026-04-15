@@ -142,5 +142,5 @@ export function useMqtt() {
     setBrokerUrl(newUrl); // state 변경 → useEffect 재실행 → 재연결
   }
 
-  return { status, topology, events, alerts, reconnectInfo };
+  return { status, topology, events, alerts, reconnectInfo, brokerUrl, setBrokerUrl };
 }

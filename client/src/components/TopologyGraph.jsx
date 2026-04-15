@@ -4,143 +4,270 @@ import cytoscape from 'cytoscape';
 /**
  * TopologyGraph
  *
- * ConnectionTable을 Cytoscape 그래프로 시각화한다.
  * - CORE 노드: 보라색 다이아몬드
  * - NODE ONLINE: 초록
- * - NODE OFFLINE: 빨강 (반투명)
+ * - NODE OFFLINE: 빨강(반투명)
  * - Edge 라벨: RTT(ms)
- * - 노드 클릭 시 onNodeClick(id) 호출, 배경 클릭 시 onNodeClick(null)
+ * - 노드 클릭 시 onNodeClick(id) 호출
+ * - 배경 클릭 시 onNodeClick(null) 호출
  *
- * @param {{ topology: object|null, onNodeClick: (id: string|null) => void }} props
+ * @param {{ topology: { nodes: any[], links: any[] } | null, onNodeClick?: (id: string | null) => void }} props
  */
 export default function TopologyGraph({ topology, onNodeClick }) {
-  const containerRef   = useRef(null);
-  const cyRef          = useRef(null);
-  // onNodeClick을 ref로 보관 — init effect 클로저 내에서 최신 콜백 참조
+  const containerRef = useRef(null);
+  const cyRef = useRef(null);
   const onNodeClickRef = useRef(onNodeClick);
-  useEffect(() => { onNodeClickRef.current = onNodeClick; }, [onNodeClick]);
+  const resizeRafRef = useRef(null);
 
-  // Cytoscape 인스턴스 초기화 (마운트 1회)
+  useEffect(() => {
+    onNodeClickRef.current = onNodeClick;
+  }, [onNodeClick]);
+
+  const fitGraph = () => {
+    const cy = cyRef.current;
+    if (!cy || cy.destroyed() || cy.elements().length === 0) return;
+
+    cy.resize();
+    cy.fit(cy.elements(), 80);
+    cy.center(cy.elements());
+  };
+
   useEffect(() => {
     if (!containerRef.current) return;
 
-    cyRef.current = cytoscape({
+    const cy = cytoscape({
       container: containerRef.current,
+      elements: [],
+      boxSelectionEnabled: false,
+      autounselectify: false,
+      userZoomingEnabled: true,
+      userPanningEnabled: true,
+      wheelSensitivity: 0.15,
+      minZoom: 0.3,
+      maxZoom: 2.5,
+      pixelRatio: 'auto',
+      nodeDimensionsIncludeLabels: true,
+
       style: [
         {
           selector: 'node',
           style: {
-            'background-color': '#4caf50',
             label: 'data(label)',
-            'font-size': 10,
+            width: 34,
+            height: 34,
+            'background-color': '#4caf50',
+            'border-width': 2,
+            'border-color': '#1f2937',
             color: '#ffffff',
+            'font-size': 12,
+            'font-weight': 600,
             'text-valign': 'bottom',
-            'text-margin-y': 4,
-            width: 28,
-            height: 28,
+            'text-halign': 'center',
+            'text-margin-y': 8,
+            'text-wrap': 'none',
+            'text-max-width': 120,
+            'overlay-opacity': 0,
           },
         },
         {
           selector: 'node[role = "CORE"]',
           style: {
-            'background-color': '#6366f1',
             shape: 'diamond',
-            width: 44,
-            height: 44,
+            width: 52,
+            height: 52,
+            'background-color': '#6366f1',
+            'border-width': 3,
+            'border-color': '#a5b4fc',
           },
         },
         {
           selector: 'node[status = "OFFLINE"]',
           style: {
-            'background-color': '#f44336',
-            opacity: 0.55,
+            'background-color': '#ef4444',
+            opacity: 0.6,
           },
         },
         {
           selector: 'node:selected',
           style: {
-            'border-width': 3,
-            'border-color': '#fff',
-            'border-opacity': 0.9,
+            'border-width': 4,
+            'border-color': '#ffffff',
           },
         },
         {
           selector: 'edge',
           style: {
-            'line-color': '#3a3a5a',
-            width: 2,
-            label: 'data(rtt)',
-            'font-size': 9,
-            color: '#888',
-            'text-background-color': '#0d0d1a',
-            'text-background-opacity': 1,
-            'text-background-padding': '2px',
+            width: 3,
+            'line-color': '#4b5563',
+            'target-arrow-color': '#4b5563',
             'curve-style': 'bezier',
+            label: 'data(rtt)',
+            color: '#cbd5e1',
+            'font-size': 10,
+            'font-weight': 500,
+            'text-background-color': '#0b1020',
+            'text-background-opacity': 0.95,
+            'text-background-padding': 3,
+            'text-border-opacity': 0,
+            'overlay-opacity': 0,
           },
         },
       ],
-      layout: { name: 'cose' },
-      elements: [],
-      userZoomingEnabled: true,
-      userPanningEnabled: true,
     });
 
-    // 노드 클릭
-    cyRef.current.on('tap', 'node', evt => {
-      onNodeClickRef.current?.(evt.target.id());
+    cyRef.current = cy;
+
+    const handleNodeTap = (evt) => {
+      const id = evt.target.id();
+      onNodeClickRef.current?.(id);
+    };
+
+    const handleBackgroundTap = (evt) => {
+      if (evt.target === cy) {
+        cy.elements().unselect();
+        onNodeClickRef.current?.(null);
+      }
+    };
+
+    cy.on('tap', 'node', handleNodeTap);
+    cy.on('tap', handleBackgroundTap);
+
+    const ro = new ResizeObserver(() => {
+      if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
+      resizeRafRef.current = requestAnimationFrame(() => {
+        fitGraph();
+      });
     });
-    // 배경 클릭 → 선택 해제
-    cyRef.current.on('tap', evt => {
-      if (evt.target === cyRef.current) onNodeClickRef.current?.(null);
-    });
+
+    ro.observe(containerRef.current);
 
     return () => {
-      cyRef.current?.destroy();
+      if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
+      ro.disconnect();
+      cy.off('tap', 'node', handleNodeTap);
+      cy.off('tap', handleBackgroundTap);
+      cy.destroy();
       cyRef.current = null;
     };
   }, []);
 
-  // topology 변경 시 그래프 업데이트 (인스턴스 재생성 없이)
   useEffect(() => {
     const cy = cyRef.current;
-    if (!cy || !topology) return;
+    if (!cy || cy.destroyed()) return;
 
-    cy.elements().remove();
+    if (!topology || !Array.isArray(topology.nodes) || !Array.isArray(topology.links)) {
+      cy.elements().remove();
+      return;
+    }
 
-    topology.nodes.forEach(n => {
-      cy.add({
+    const elements = [];
+
+    for (const n of topology.nodes) {
+      const rawId = String(n.id ?? '');
+      elements.push({
         group: 'nodes',
         data: {
-          id:     n.id,
-          label:  n.id.slice(0, 6),
-          role:   n.role,
-          status: n.status,
+          id: rawId,
+          label: rawId.slice(0, 8),
+          role: n.role ?? 'NODE',
+          status: n.status ?? 'ONLINE',
         },
+      });
+    }
+
+    const nodeIdSet = new Set(topology.nodes.map((n) => String(n.id ?? '')));
+
+    for (const l of topology.links) {
+      const fromId = String(l.from_id ?? '');
+      const toId = String(l.to_id ?? '');
+
+      if (!nodeIdSet.has(fromId) || !nodeIdSet.has(toId)) continue;
+
+      const rttValue =
+        typeof l.rtt_ms === 'number' && Number.isFinite(l.rtt_ms)
+          ? `${Math.round(l.rtt_ms)}ms`
+          : '';
+
+      elements.push({
+        group: 'edges',
+        data: {
+          id: `${fromId}->${toId}`,
+          source: fromId,
+          target: toId,
+          rtt: rttValue,
+        },
+      });
+    }
+
+    cy.batch(() => {
+      cy.elements().remove();
+      cy.add(elements);
+    });
+
+    const nodeCount = topology.nodes.length;
+
+    // 작은 토폴로지는 concentric이 가장 안정적으로 "가운데" 잘 잡힘
+    // 큰 토폴로지는 cose로 자연스럽게 퍼뜨림
+    const layoutOptions =
+      nodeCount <= 20
+        ? {
+            name: 'concentric',
+            animate: false,
+            fit: true,
+            padding: 100,
+            avoidOverlap: true,
+            spacingFactor: 1.15,
+            minNodeSpacing: 60,
+            startAngle: -Math.PI / 2,
+            concentric: (node) => {
+              const role = node.data('role');
+              const status = node.data('status');
+
+              if (role === 'CORE') return 3;
+              if (status === 'OFFLINE') return 1;
+              return 2;
+            },
+            levelWidth: () => 1,
+          }
+        : {
+            name: 'cose',
+            animate: false,
+            fit: true,
+            padding: 100,
+            randomize: false,
+            nodeRepulsion: 120000,
+            idealEdgeLength: 160,
+            edgeElasticity: 120,
+            nestingFactor: 1.1,
+            gravity: 0.25,
+            numIter: 1200,
+          };
+
+    const layout = cy.layout(layoutOptions);
+
+    layout.on('layoutstop', () => {
+      requestAnimationFrame(() => {
+        fitGraph();
       });
     });
 
-    topology.links.forEach(l => {
-      // 양쪽 노드가 그래프에 존재할 때만 edge 추가
-      if (cy.getElementById(l.from_id).length && cy.getElementById(l.to_id).length) {
-        cy.add({
-          group: 'edges',
-          data: {
-            source: l.from_id,
-            target: l.to_id,
-            rtt:    `${l.rtt_ms.toFixed(0)}ms`,
-          },
-        });
-      }
+    requestAnimationFrame(() => {
+      cy.resize();
+      layout.run();
     });
-
-    cy.layout({ name: 'cose', animate: false, randomize: false }).run();
-    cy.style().update();
   }, [topology]);
 
   return (
     <div
       ref={containerRef}
       className="topology-graph"
+      style={{
+        width: '100%',
+        height: '100%',
+        minHeight: '420px',
+        position: 'relative',
+        overflow: 'hidden',
+      }}
     />
   );
 }

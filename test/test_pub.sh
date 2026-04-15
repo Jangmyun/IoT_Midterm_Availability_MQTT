@@ -13,6 +13,11 @@
 
 PUB="mosquitto_pub -h localhost -p 1883"
 
+# UUID v4 생성 — python3 사용 (macOS/Linux/Raspberry Pi 공통)
+gen_uuid() {
+  python3 -c "import uuid; print(uuid.uuid4())"
+}
+
 # ── ID 상수 ────────────────────────────────────────────────────
 CORE_A="aaaaaaaa-0000-0000-0000-000000000001"
 CORE_B="bbbbbbbb-0000-0000-0000-000000000002"
@@ -46,7 +51,7 @@ send_topology() {
 # ── D-01: INTRUSION 이벤트 (HIGH) ──────────────────────────────
 send_event_intrusion() {
   $PUB -t "campus/data/INTRUSION" -q 1 -m '{
-    "msg_id": "evt-'"$(date +%s%N | md5 | head -c 8)"'",
+    "msg_id": "'"$(gen_uuid)"'",
     "type": "INTRUSION",
     "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%S)"'",
     "priority": "HIGH",
@@ -62,7 +67,7 @@ send_event_intrusion() {
 # ── D-02: MOTION 이벤트 (건물별 세분화) ───────────────────────
 send_event_motion() {
   $PUB -t "campus/data/MOTION/bldg-b" -q 1 -m '{
-    "msg_id": "evt-'"$(date +%s%N | md5 | head -c 8)"'",
+    "msg_id": "'"$(gen_uuid)"'",
     "type": "MOTION",
     "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%S)"'",
     "source": {"role":"NODE","id":"'"$NODE_2"'"},
@@ -77,7 +82,7 @@ send_event_motion() {
 # ── A-01: Node OFFLINE 알림 ─────────────────────────────────────
 send_node_down() {
   $PUB -t "campus/alert/node_down/$NODE_1" -q 1 -m '{
-    "msg_id": "alrt-'"$(date +%s%N | md5 | head -c 8)"'",
+    "msg_id": "'"$(gen_uuid)"'",
     "type": "STATUS",
     "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%S)"'",
     "source": {"role":"CORE","id":"'"$CORE_A"'"},
@@ -92,7 +97,7 @@ send_node_down() {
 # ── A-02: Node 복구 알림 ────────────────────────────────────────
 send_node_up() {
   $PUB -t "campus/alert/node_up/$NODE_1" -q 1 -m '{
-    "msg_id": "alrt-'"$(date +%s%N | md5 | head -c 8)"'",
+    "msg_id": "'"$(gen_uuid)"'",
     "type": "STATUS",
     "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%S)"'",
     "source": {"role":"CORE","id":"'"$CORE_A"'"},
@@ -107,7 +112,7 @@ send_node_up() {
 # ── A-03: Active Core 교체 알림 (재연결 배너 테스트) ─────────────
 send_core_switch() {
   $PUB -t "campus/alert/core_switch" -q 1 -m '{
-    "msg_id": "sw-'"$(date +%s%N | md5 | head -c 8)"'",
+    "msg_id": "'"$(gen_uuid)"'",
     "type": "STATUS",
     "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%S)"'",
     "source": {"role":"CORE","id":"'"$CORE_B"'"},
@@ -122,7 +127,7 @@ send_core_switch() {
 # ── W-01: Core LWT (재연결 배너 테스트) ────────────────────────
 send_lwt() {
   $PUB -t "campus/will/core/$CORE_A" -q 1 -m '{
-    "msg_id": "lwt-'"$(date +%s%N | md5 | head -c 8)"'",
+    "msg_id": "'"$(gen_uuid)"'",
     "type": "LWT_CORE",
     "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%S)"'",
     "source": {"role":"CORE","id":"'"$CORE_A"'"},
