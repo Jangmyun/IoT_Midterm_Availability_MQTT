@@ -151,5 +151,110 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
         return;
     }
 }
+
+// main =====================================================
+
+int main(int argc, char* argv[]) {
+    // 인수: <broker_host> <broker_port> <core_ip> <core_port> [backup_core_ip] [backup_core_port]
+    if (argc < 5) {
+        fprintf(stderr,
+            "usage: %s <broker_host> <broker_port> <core_ip> <core_port>"
+            " [backup_core_ip] [backup_core_port]\n", argv[0]);
+        return 1;
+    }
+    const char* broker_host = argv[1];
+    int         broker_port = atoi(argv[2]);
+    const char* core_ip = argv[3];
+    int         core_port = atoi(argv[4]);
+    const char* backup_core_ip = (argc > 5) ? argv[5] : "";
+    int         backup_port = (argc > 6) ? atoi(argv[6]) : 1883;
+
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    // 1. edge_id UUID 생성
+    EdgeContext ctx = {};
+    uuid_generate(ctx.edge_id);
+    ctx.node_port = (uint16_t)broker_port;  // 인접 노드들이 접속할 로컬 포트
+
+    // 2. core 방향 outbound IP 자동 감지
+    if (!get_outbound_ip(core_ip, core_port, ctx.node_ip, sizeof(ctx.node_ip))) {
+        fprintf(stderr, "[edge] failed to detect outbound IP toward %s\n", core_ip);
+        return 1;
+    }
+
+    // 3. 로컬 CT 초기화 (core로부터 수신 전 빈 상태)
+    ConnectionTableManager ct_manager;
+    ctx.ct_manager = &ct_manager;
+    ct_manager.init("", "");
+
+    // 4. mosquitto 초기화
+    mosquitto_lib_init();
+
+    // 5. core 연결용 클라이언트 생성
+    struct mosquitto* mosq_core = mosquitto_new(ctx.edge_id, true, &ctx);
+    if (!mosq_core) {
+        fprintf(stderr, "[edge] mosquitto_new failed\n");
+        mosquitto_lib_cleanup();
+        return 1;
+    }
+
+    // 6. LWT 설정 (W-02): 비정상 종료 시 core가 OFFLINE 처리
+    {
+        MqttMessage lwt = {};
+        strncpy(lwt.msg_id, ctx.edge_id, UUID_LEN - 1);
+        lwt.type = MSG_TYPE_LWT_NODE;
+        lwt.source.role = NODE_ROLE_NODE;
+        strncpy(lwt.source.id, ctx.edge_id, UUID_LEN - 1);
+        lwt.delivery = { 1, false, false };
+
+        char lwt_topic[128];
+        snprintf(lwt_topic, sizeof(lwt_topic), "%s%s",
+            TOPIC_LWT_NODE_PREFIX, ctx.edge_id);
+
+        std::string lwt_json = mqtt_message_to_json(lwt);
+        mosquitto_will_set(mosq_core, lwt_topic,
+            (int)lwt_json.size(), lwt_json.c_str(), 1, false);
+    }
+
+    // 7. 콜백 등록
+    mosquitto_connect_callback_set(mosq_core, on_connect_core);
+    mosquitto_message_callback_set(mosq_core, on_message_core);
+    mosquitto_disconnect_callback_set(mosq_core, on_disconnect_core);
+
+    // 8. Core 브로커 연결 (auto-reconnect 활성화)
+    mosquitto_reconnect_delay_set(mosq_core, 2, 30, false);
+    int rc = mosquitto_connect(mosq_core, core_ip, core_port, 60);
+    if (rc != MOSQ_ERR_SUCCESS) {
+        fprintf(stderr, "[edge] connect to core failed: %s\n",
+            mosquitto_strerror(rc));
+        mosquitto_destroy(mosq_core);
+        mosquitto_lib_cleanup();
+        return 1;
+    }
+
+    // 9. 이벤트 루프 시작
+    mosquitto_loop_start(mosq_core);
+
+    printf("[edge] %s  local=%s:%d  core=%s:%d  backup=%s\n",
+        ctx.edge_id, ctx.node_ip, broker_port,
+        core_ip, core_port,
+        backup_core_ip[0] ? backup_core_ip : "(none)");
+
+    // TODO: mosq_local (broker_host:broker_port) 연결 — 로컬 CCTV 이벤트 수집
+    // TODO: mosq_backup (backup_core_ip:backup_port) 연결 — Backup Core 유지
+    (void)broker_host;
+    (void)backup_core_ip;
+    (void)backup_port;
+
+    while (g_running) {
+        struct timespec ts = { 1, 0 };
+        nanosleep(&ts, nullptr);
+    }
+
+    printf("[edge] shutting down\n");
+    mosquitto_loop_stop(mosq_core, true);
+    mosquitto_destroy(mosq_core);
+    mosquitto_lib_cleanup();
     return 0;
 }
