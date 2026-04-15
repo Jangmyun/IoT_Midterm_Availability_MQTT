@@ -5,9 +5,27 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# ── Platform: macOS Homebrew prefix ──────────────────────────────────────────
+# Ubuntu/Raspberry Pi OS 에서는 시스템 기본 경로를 사용하므로 아무 영향 없음
+if(APPLE)
+    execute_process(
+        COMMAND brew --prefix
+        OUTPUT_VARIABLE HOMEBREW_PREFIX
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(HOMEBREW_PREFIX)
+        set(ENV{PKG_CONFIG_PATH} "${HOMEBREW_PREFIX}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+    endif()
+endif()
+
 # ── Dependencies ──────────────────────────────────────────────────────────────
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(MOSQUITTO REQUIRED libmosquitto)
+
+# IMPORTED_TARGET: PkgConfig::<NAME> 타겟 자동 생성 (include/link/cflags 일괄 포함)
+pkg_check_modules(MOSQUITTO REQUIRED IMPORTED_TARGET libmosquitto)
+# mosquitto 2.x 가 cJSON 을 헤더에서 전이 노출하므로 명시적으로 연결
+pkg_check_modules(CJSON     REQUIRED IMPORTED_TARGET libcjson)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -22,6 +40,7 @@ FetchContent_MakeAvailable(nlohmann_json)
 # ── Common library (shared by core & edge) ────────────────────────────────────
 add_library(broker_common STATIC
     src/common/mqtt_json.cpp
+    src/common/connection_table_manager.cpp
 )
 target_include_directories(broker_common PUBLIC include)
 target_link_libraries(broker_common PUBLIC nlohmann_json::nlohmann_json)
@@ -33,9 +52,7 @@ add_executable(edge_broker src/edge/main.cpp)
 foreach(TARGET core_broker edge_broker)
     target_link_libraries(${TARGET} PRIVATE
         broker_common
-        ${MOSQUITTO_LIBRARIES}
+        PkgConfig::MOSQUITTO
+        PkgConfig::CJSON
     )
-    target_include_directories(${TARGET} PRIVATE ${MOSQUITTO_INCLUDE_DIRS})
-    target_link_directories(${TARGET} PRIVATE ${MOSQUITTO_LIBRARY_DIRS})
-    target_compile_options(${TARGET} PRIVATE ${MOSQUITTO_CFLAGS_OTHER})
 endforeach()
