@@ -18,8 +18,8 @@ PROJECT_ROOT="$(cd "$TEST_ROOT/.." && pwd)"
 : "${MQTT_TIMEOUT:=10}"
 : "${BUILD_DIR:=$PROJECT_ROOT/build}"
 
-: "${EDGE_BIND_HOST:=0.0.0.0}"
-: "${EDGE_NODE_PORT:=2883}"
+: "${EDGE_BIND_HOST:=127.0.0.1}"
+: "${EDGE_NODE_PORT:=${MQTT_PORT}}"
 : "${EDGE_CORE_HOST:=$MQTT_HOST}"
 : "${EDGE_CORE_PORT:=$MQTT_PORT}"
 : "${EDGE_BACKUP_CORE_IP:=}"
@@ -285,7 +285,7 @@ kill_forcefully() {
 
 extract_core_id() {
   local log_file="$1"
-  grep -E '^\[core\] [0-9a-f-]{36} running' "$log_file" | head -n1 | awk '{print $2}'
+  grep -E '^\[core\] [0-9a-f-]{36} \((ACTIVE|BACKUP)\) running' "$log_file" | head -n1 | awk '{print $2}'
 }
 
 extract_edge_id() {

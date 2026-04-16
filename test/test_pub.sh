@@ -27,6 +27,10 @@ Usage: ./test/test_pub.sh <case>
 [core] core_broker 동작 검증 (BUILD_DIR 또는 CORE_BINARY 필요):
   core_bootstrap
   core_lwt
+  core_node_offline
+  core_event_dedup
+  core_ct_sync
+  core_core_switch
 
 [edge] edge_broker 동작 검증 (BUILD_DIR 또는 EDGE_BINARY 필요):
   edge_ping_pong
@@ -66,6 +70,10 @@ client/edge-cases/invalid_uuid
 client/edge-cases/missing_priority
 core/bootstrap
 core/lwt
+core/node_offline
+core/event_dedup
+core/ct_sync
+core/core_switch
 edge/ping_pong
 edge/lwt
 EOF
@@ -102,8 +110,12 @@ try_run_binary_test() {
 }
 
 run_all_core() {
-  try_run_binary_test "$SCRIPT_DIR/core/01_bootstrap.sh" "core/01_bootstrap"
-  try_run_binary_test "$SCRIPT_DIR/core/02_lwt.sh"       "core/02_lwt"
+  try_run_binary_test "$SCRIPT_DIR/core/01_bootstrap.sh"    "core/01_bootstrap"
+  try_run_binary_test "$SCRIPT_DIR/core/02_lwt.sh"          "core/02_lwt"
+  try_run_binary_test "$SCRIPT_DIR/core/03_node_offline.sh" "core/03_node_offline"
+  try_run_binary_test "$SCRIPT_DIR/core/04_event_dedup.sh"  "core/04_event_dedup"
+  try_run_binary_test "$SCRIPT_DIR/core/05_ct_sync.sh"      "core/05_ct_sync"
+  try_run_binary_test "$SCRIPT_DIR/core/06_core_switch.sh"  "core/06_core_switch"
   printf '[test] all_core completed\n'
 }
 
@@ -132,6 +144,10 @@ case "${1:-help}" in
   # core
   core_bootstrap)     exec "$SCRIPT_DIR/core/01_bootstrap.sh" ;;
   core_lwt)           exec "$SCRIPT_DIR/core/02_lwt.sh" ;;
+  core_node_offline)  exec "$SCRIPT_DIR/core/03_node_offline.sh" ;;
+  core_event_dedup)   exec "$SCRIPT_DIR/core/04_event_dedup.sh" ;;
+  core_ct_sync)       exec "$SCRIPT_DIR/core/05_ct_sync.sh" ;;
+  core_core_switch)   exec "$SCRIPT_DIR/core/06_core_switch.sh" ;;
   # edge
   edge_ping_pong)     exec "$SCRIPT_DIR/edge/01_ping_pong.sh" ;;
   edge_lwt)           exec "$SCRIPT_DIR/edge/02_lwt.sh" ;;
