@@ -3,11 +3,14 @@
 #include <cstdlib>
 #include <csignal>
 #include <ctime>
+#include <string>
+#include <unordered_set>
 #include <mosquitto.h>
 #include "connection_table_manager.h"
 #include "mqtt_json.h"
 #include "message.h"
 #include "uuid.h"
+#include "core_helpers.h"
 
 // Global State =====================================================
 static volatile bool g_running = true;
@@ -15,6 +18,7 @@ static volatile bool g_running = true;
 struct CoreContext {
     const char* core_id;
     ConnectionTableManager* ct_manager;
+    std::unordered_set<std::string> seen_msg_ids;
 };
 
 static void handle_signal(int) { g_running = false; }
@@ -55,7 +59,7 @@ static void on_message(struct mosquitto* mosq, void* userdata,
     const struct mosquitto_message* msg) {
     auto* ctx = static_cast<CoreContext*>(userdata);
 
-    // Node 비정상 종료 LWT (W-02): OFFLINE 마킹 후 CT 브로드캐스트
+    // Node 비정상 종료 LWT (W-02): OFFLINE 마킹 → CT 브로드캐스트 → node_down 알림 (FR-06)
     if (strncmp(msg->topic, "campus/will/node/", 17) == 0) {
         const char* node_id = msg->topic + 17;
         if (ctx->ct_manager->setNodeStatus(node_id, NODE_STATUS_OFFLINE)) {
@@ -63,8 +67,64 @@ static void on_message(struct mosquitto* mosq, void* userdata,
             std::string json = connection_table_to_json(ct);
             mosquitto_publish(mosq, nullptr, TOPIC_TOPOLOGY,
                 (int)json.size(), json.c_str(), 1, true);
+
+            char alert_topic[128];
+            snprintf(alert_topic, sizeof(alert_topic), "campus/alert/node_down/%s", node_id);
+            mosquitto_publish(mosq, nullptr, alert_topic,
+                (int)json.size(), json.c_str(), 1, false);
+
             printf("[core] node offline: %s  (ct.version=%d)\n", node_id, ct.version);
         }
+        return;
+    }
+
+    // Edge 등록 (M-03): CT에 추가 후 브로드캐스트
+    if (strncmp(msg->topic, "campus/monitor/status/", 22) == 0) {
+        MqttMessage reg;
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+        if (!mqtt_message_from_json(json, reg)) return;
+
+        char node_ip[IP_LEN] = {};
+        int  node_port = 0;
+        if (!parse_ip_port(reg.payload.description, node_ip, sizeof(node_ip), &node_port)) {
+            fprintf(stderr, "[core] bad status description: '%s'\n", reg.payload.description);
+            return;
+        }
+
+        NodeEntry node = {};
+        strncpy(node.id, reg.source.id, UUID_LEN - 1);
+        node.role = NODE_ROLE_NODE;
+        strncpy(node.ip, node_ip, IP_LEN - 1);
+        node.port = (uint16_t)node_port;
+        node.status = NODE_STATUS_ONLINE;
+        node.hop_to_core = 1;
+
+        ctx->ct_manager->addNode(node);
+        ConnectionTable ct = ctx->ct_manager->snapshot();
+        std::string ct_json = connection_table_to_json(ct);
+        mosquitto_publish(mosq, nullptr, TOPIC_TOPOLOGY,
+            (int)ct_json.size(), ct_json.c_str(), 1, true);
+        printf("[core] edge registered: %s  %s:%d  (ct.version=%d)\n",
+            node.id, node_ip, node_port, ct.version);
+        return;
+    }
+
+    // 이벤트 데이터 / Relay (FR-02, FR-03): msg_id 중복 필터 후 republish
+    if (strncmp(msg->topic, "campus/data/", 12) == 0 ||
+        strncmp(msg->topic, "campus/relay/", 13) == 0) {
+        MqttMessage evt;
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+        if (!mqtt_message_from_json(json, evt)) return;
+
+        std::string msg_id(evt.msg_id);
+        if (ctx->seen_msg_ids.count(msg_id)) return;
+
+        if (ctx->seen_msg_ids.size() > 10000) ctx->seen_msg_ids.clear();
+        ctx->seen_msg_ids.insert(msg_id);
+
+        mosquitto_publish(mosq, nullptr, msg->topic,
+            msg->payloadlen, msg->payload, 1, false);
+        printf("[core] event forwarded: %s  (msg_id=%.8s)\n", msg->topic, evt.msg_id);
         return;
     }
 
@@ -72,8 +132,6 @@ static void on_message(struct mosquitto* mosq, void* userdata,
     if (strcmp(msg->topic, TOPIC_CT_SYNC) == 0) {
         return;
     }
-
-    // 이벤트 데이터 / Relay — TODO: msg_id 중복 필터링 후 Client 전달
 }
 
 // main =====================================================
@@ -112,7 +170,10 @@ int main(int argc, char* argv[]) {
     }
 
     // 3. mosquitto 클라이언트 생성
-    CoreContext ctx = { core_id, &ct_manager };
+    CoreContext ctx;
+    ctx.core_id = core_id;
+    ctx.ct_manager = &ct_manager;
+
     struct mosquitto* mosq = mosquitto_new(core_id, true, &ctx);
     if (!mosq) {
         fprintf(stderr, "[core] mosquitto_new failed\n");
