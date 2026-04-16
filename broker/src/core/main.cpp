@@ -10,13 +10,14 @@
 #include "mqtt_json.h"
 #include "message.h"
 #include "uuid.h"
+#include "core_helpers.h"
 
 // Global State =====================================================
 static volatile bool g_running = true;
 
 struct CoreContext {
-    const char*                     core_id;
-    ConnectionTableManager*         ct_manager;
+    const char* core_id;
+    ConnectionTableManager* ct_manager;
     std::unordered_set<std::string> seen_msg_ids;
 };
 
