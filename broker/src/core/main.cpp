@@ -108,12 +108,30 @@ static void on_message(struct mosquitto* mosq, void* userdata,
             node.id, node_ip, node_port, ct.version);
         return;
     }
+
+    // 이벤트 데이터 / Relay (FR-02, FR-03): msg_id 중복 필터 후 republish
+    if (strncmp(msg->topic, "campus/data/", 12) == 0 ||
+        strncmp(msg->topic, "campus/relay/", 13) == 0) {
+        MqttMessage evt;
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+        if (!mqtt_message_from_json(json, evt)) return;
+
+        std::string msg_id(evt.msg_id);
+        if (ctx->seen_msg_ids.count(msg_id)) return;
+
+        if (ctx->seen_msg_ids.size() > 10000) ctx->seen_msg_ids.clear();
+        ctx->seen_msg_ids.insert(msg_id);
+
+        mosquitto_publish(mosq, nullptr, msg->topic,
+            msg->payloadlen, msg->payload, 1, false);
+        printf("[core] event forwarded: %s  (msg_id=%.8s)\n", msg->topic, evt.msg_id);
+        return;
+    }
+
     // Core 간 CT 동기화 (C-01) — TODO: peer CT merge
     if (strcmp(msg->topic, TOPIC_CT_SYNC) == 0) {
         return;
     }
-
-    // 이벤트 데이터 / Relay — TODO: msg_id 중복 필터링 후 Client 전달
 }
 
 // main =====================================================
