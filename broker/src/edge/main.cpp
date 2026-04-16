@@ -22,7 +22,7 @@
 static volatile bool g_running = true;
 
 // message.h에는 TOPIC_DATA_ALL만 있으므로 edge 쪽 prefix 비교용으로 따로 둠
-static const char *TOPIC_DATA_PREFIX = "campus/data/";
+static const char* TOPIC_DATA_PREFIX = "campus/data/";
 
 struct QueuedEvent
 {
@@ -35,11 +35,11 @@ struct EdgeContext
     char edge_id[UUID_LEN];
     char node_ip[IP_LEN];
     uint16_t node_port;
-    ConnectionTableManager *ct_manager;
+    ConnectionTableManager* ct_manager;
 
     // upstream publish를 위해 보관
-    struct mosquitto *mosq_core;
-    struct mosquitto *mosq_backup;
+    struct mosquitto* mosq_core;
+    struct mosquitto* mosq_backup;
 
     bool core_connected;
     bool backup_connected;
@@ -54,7 +54,7 @@ struct EdgeContext
 static void handle_signal(int) { g_running = false; }
 
 // core 방향 outbound IP 감지 (실제 패킷 전송 없음)
-static bool get_outbound_ip(const char *dest_ip, int dest_port, char *out, size_t len)
+static bool get_outbound_ip(const char* dest_ip, int dest_port, char* out, size_t len)
 {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0)
@@ -65,7 +65,7 @@ static bool get_outbound_ip(const char *dest_ip, int dest_port, char *out, size_
     dest.sin_port = htons((uint16_t)dest_port);
     dest.sin_addr.s_addr = inet_addr(dest_ip);
 
-    if (connect(sock, (sockaddr *)&dest, sizeof(dest)) < 0)
+    if (connect(sock, (sockaddr*)&dest, sizeof(dest)) < 0)
     {
         close(sock);
         return false;
@@ -73,17 +73,17 @@ static bool get_outbound_ip(const char *dest_ip, int dest_port, char *out, size_
 
     sockaddr_in local{};
     socklen_t local_len = sizeof(local);
-    getsockname(sock, (sockaddr *)&local, &local_len);
+    getsockname(sock, (sockaddr*)&local, &local_len);
     close(sock);
 
     inet_ntop(AF_INET, &local.sin_addr, out, (socklen_t)len);
     return true;
 }
 
-static void set_now_utc(char *out, size_t len)
+static void set_now_utc(char* out, size_t len)
 {
     std::time_t now = std::time(nullptr);
-    std::tm *utc = std::gmtime(&now);
+    std::tm* utc = std::gmtime(&now);
     if (!utc)
     {
         if (len > 0)
@@ -93,16 +93,16 @@ static void set_now_utc(char *out, size_t len)
     std::strftime(out, len, "%Y-%m-%dT%H:%M:%SZ", utc);
 }
 
-static std::string to_lower_copy(const std::string &s)
+static std::string to_lower_copy(const std::string& s)
 {
     std::string x = s;
     std::transform(x.begin(), x.end(), x.begin(),
-                   [](unsigned char c)
-                   { return (char)std::tolower(c); });
+        [](unsigned char c)
+        { return (char)std::tolower(c); });
     return x;
 }
 
-static MsgType infer_msg_type(const char *topic, const std::string &payload)
+static MsgType infer_msg_type(const char* topic, const std::string& payload)
 {
     std::string t = to_lower_copy(topic ? topic : "");
     std::string p = to_lower_copy(payload);
@@ -125,8 +125,8 @@ static MsgPriority infer_priority(MsgType type)
     return PRIORITY_NONE;
 }
 
-static void parse_building_camera(const char *topic, char *building, size_t building_len,
-                                  char *camera, size_t camera_len)
+static void parse_building_camera(const char* topic, char* building, size_t building_len,
+    char* camera, size_t camera_len)
 {
     if (building_len > 0)
         building[0] = '\0';
@@ -140,8 +140,8 @@ static void parse_building_camera(const char *topic, char *building, size_t buil
     if (std::strncmp(topic, TOPIC_DATA_PREFIX, prefix_len) != 0)
         return;
 
-    const char *rest = topic + prefix_len;
-    const char *slash = std::strchr(rest, '/');
+    const char* rest = topic + prefix_len;
+    const char* slash = std::strchr(rest, '/');
 
     if (!slash)
     {
@@ -155,7 +155,7 @@ static void parse_building_camera(const char *topic, char *building, size_t buil
 }
 
 // core / backup 공통 등록 함수
-static void publish_edge_status(struct mosquitto *mosq, EdgeContext *ctx, const char *label)
+static void publish_edge_status(struct mosquitto* mosq, EdgeContext* ctx, const char* label)
 {
     // Core에 자신 등록: description 필드에 "ip:port" 인코딩
     MqttMessage reg = {};
@@ -168,24 +168,24 @@ static void publish_edge_status(struct mosquitto *mosq, EdgeContext *ctx, const 
     reg.target.role = NODE_ROLE_CORE;
     reg.target.id[0] = '\0';
 
-    reg.delivery = {1, false, false};
+    reg.delivery = { 1, false, false };
     std::snprintf(reg.payload.description, DESCRIPTION_LEN,
-                  "%s:%u", ctx->node_ip, ctx->node_port);
+        "%s:%u", ctx->node_ip, ctx->node_port);
 
     char status_topic[128];
     std::snprintf(status_topic, sizeof(status_topic), "%s%s",
-                  TOPIC_STATUS_PREFIX, ctx->edge_id);
+        TOPIC_STATUS_PREFIX, ctx->edge_id);
 
     std::string json = mqtt_message_to_json(reg);
     mosquitto_publish(mosq, nullptr, status_topic,
-                      (int)json.size(), json.c_str(), 1, false);
+        (int)json.size(), json.c_str(), 1, false);
 
     std::printf("[edge] registered to %s: id=%s  ip=%s:%u\n",
-                label, ctx->edge_id, ctx->node_ip, ctx->node_port);
+        label, ctx->edge_id, ctx->node_ip, ctx->node_port);
 }
 
-static void build_event_message(EdgeContext *ctx, const char *topic,
-                                const std::string &payload, MqttMessage *out_msg)
+static void build_event_message(EdgeContext* ctx, const char* topic,
+    const std::string& payload, MqttMessage* out_msg)
 {
     MqttMessage msg = {};
     uuid_generate(msg.msg_id);
@@ -211,11 +211,11 @@ static void build_event_message(EdgeContext *ctx, const char *topic,
     msg.route.hop_count = 0;
     msg.route.ttl = 8;
 
-    msg.delivery = {1, false, false};
+    msg.delivery = { 1, false, false };
 
     parse_building_camera(topic,
-                          msg.payload.building_id, sizeof(msg.payload.building_id),
-                          msg.payload.camera_id, sizeof(msg.payload.camera_id));
+        msg.payload.building_id, sizeof(msg.payload.building_id),
+        msg.payload.camera_id, sizeof(msg.payload.camera_id));
 
     std::strncpy(msg.payload.description, payload.c_str(), DESCRIPTION_LEN - 1);
     msg.payload.description[DESCRIPTION_LEN - 1] = '\0';
@@ -223,16 +223,16 @@ static void build_event_message(EdgeContext *ctx, const char *topic,
     *out_msg = msg;
 }
 
-static bool publish_to_upstream(struct mosquitto *mosq, const char *label,
-                                const char *topic, const MqttMessage &msg)
+static bool publish_to_upstream(struct mosquitto* mosq, const char* label,
+    const char* topic, const MqttMessage& msg)
 {
     if (!mosq)
         return false;
 
     std::string json = mqtt_message_to_json(msg);
     int rc = mosquitto_publish(mosq, nullptr, topic,
-                               (int)json.size(), json.c_str(),
-                               msg.delivery.qos, msg.delivery.retain);
+        (int)json.size(), json.c_str(),
+        msg.delivery.qos, msg.delivery.retain);
 
     if (rc == MOSQ_ERR_SUCCESS)
     {
@@ -243,11 +243,11 @@ static bool publish_to_upstream(struct mosquitto *mosq, const char *label,
     }
 
     std::fprintf(stderr, "[edge] publish to %s failed: %s\n",
-                 label, mosquitto_strerror(rc));
+        label, mosquitto_strerror(rc));
     return false;
 }
 
-static bool forward_message_upstream(EdgeContext *ctx, const char *topic, const MqttMessage &msg)
+static bool forward_message_upstream(EdgeContext* ctx, const char* topic, const MqttMessage& msg)
 {
     // Core LWT를 받아 backup 우선 모드가 된 경우
     if (ctx->prefer_backup)
@@ -284,13 +284,13 @@ static bool forward_message_upstream(EdgeContext *ctx, const char *topic, const 
     return false;
 }
 
-static bool has_pending_queue(EdgeContext *ctx)
+static bool has_pending_queue(EdgeContext* ctx)
 {
     std::lock_guard<std::mutex> lock(ctx->queue_mutex);
     return !ctx->store_queue.empty();
 }
 
-static void queue_event(EdgeContext *ctx, const char *topic, const MqttMessage &msg)
+static void queue_event(EdgeContext* ctx, const char* topic, const MqttMessage& msg)
 {
     QueuedEvent item = {};
     std::strncpy(item.topic, topic, sizeof(item.topic) - 1);
@@ -306,7 +306,7 @@ static void queue_event(EdgeContext *ctx, const char *topic, const MqttMessage &
     std::printf("  queue_size : %zu\n", ctx->store_queue.size());
 }
 
-static void flush_store_queue(EdgeContext *ctx)
+static void flush_store_queue(EdgeContext* ctx)
 {
     std::lock_guard<std::mutex> flush_lock(ctx->flush_mutex);
 
@@ -340,7 +340,7 @@ static void flush_store_queue(EdgeContext *ctx)
     }
 }
 
-static void handle_local_event_delivery(EdgeContext *ctx, const char *topic, const std::string &payload)
+static void handle_local_event_delivery(EdgeContext* ctx, const char* topic, const std::string& payload)
 {
     MqttMessage event_msg = {};
     build_event_message(ctx, topic, payload, &event_msg);
@@ -370,9 +370,9 @@ static void handle_local_event_delivery(EdgeContext *ctx, const char *topic, con
 
 // Callbacks =====================================================
 
-static void on_connect_core(struct mosquitto *mosq, void *userdata, int rc)
+static void on_connect_core(struct mosquitto* mosq, void* userdata, int rc)
 {
-    auto *ctx = static_cast<EdgeContext *>(userdata);
+    auto* ctx = static_cast<EdgeContext*>(userdata);
 
     if (rc != 0)
     {
@@ -398,35 +398,35 @@ static void on_connect_core(struct mosquitto *mosq, void *userdata, int rc)
     flush_store_queue(ctx);
 }
 
-static void on_disconnect_core(struct mosquitto * /*mosq*/, void *userdata, int rc)
+static void on_disconnect_core(struct mosquitto* /*mosq*/, void* userdata, int rc)
 {
-    auto *ctx = static_cast<EdgeContext *>(userdata);
+    auto* ctx = static_cast<EdgeContext*>(userdata);
     ctx->core_connected = false;
 
     std::printf("[edge] disconnected from core (rc=%d)%s\n", rc,
-                rc != 0 ? " — waiting for reconnect" : "");
+        rc != 0 ? " — waiting for reconnect" : "");
 }
 
-static void on_message_core(struct mosquitto *mosq, void *userdata,
-                            const struct mosquitto_message *msg)
+static void on_message_core(struct mosquitto* mosq, void* userdata,
+    const struct mosquitto_message* msg)
 {
-    auto *ctx = static_cast<EdgeContext *>(userdata);
+    auto* ctx = static_cast<EdgeContext*>(userdata);
 
     // CT 수신 (M-04): 로컬 CT 갱신
     if (std::strcmp(msg->topic, TOPIC_TOPOLOGY) == 0)
     {
         ConnectionTable ct;
-        std::string json(static_cast<char *>(msg->payload), msg->payloadlen);
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
         if (connection_table_from_json(json, ct))
         {
             std::printf("[edge] CT received (version=%d, nodes=%d)\n",
-                        ct.version, ct.node_count);
+                ct.version, ct.node_count);
             // TODO: version 비교 후 구버전 무시, RTT 측정 → relay 경로 초기화
         }
         return;
     }
 
-   // Core LWT 수신 (W-01): backup core를 사실상 1순위로 승격
+    // Core LWT 수신 (W-01): backup core를 사실상 1순위로 승격
     if (std::strncmp(msg->topic, "campus/will/core/", 17) == 0)
     {
         std::printf("[edge] core down: %s\n", msg->topic + 17);
@@ -450,7 +450,7 @@ static void on_message_core(struct mosquitto *mosq, void *userdata,
     if (std::strncmp(msg->topic, TOPIC_PING_PREFIX, std::strlen(TOPIC_PING_PREFIX)) == 0)
     {
         MqttMessage ping;
-        std::string json(static_cast<char *>(msg->payload), msg->payloadlen);
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
         if (!mqtt_message_from_json(json, ping))
             return;
 
@@ -465,21 +465,21 @@ static void on_message_core(struct mosquitto *mosq, void *userdata,
         std::strncpy(pong.target.id, ping.source.id, UUID_LEN - 1);
         pong.target.id[UUID_LEN - 1] = '\0';
 
-        pong.delivery = {0, false, false};
+        pong.delivery = { 0, false, false };
 
         char pong_topic[128];
         std::snprintf(pong_topic, sizeof(pong_topic), "%s%s",
-                      TOPIC_PONG_PREFIX, ping.source.id);
+            TOPIC_PONG_PREFIX, ping.source.id);
 
         std::string pong_json = mqtt_message_to_json(pong);
         mosquitto_publish(mosq, nullptr, pong_topic,
-                          (int)pong_json.size(), pong_json.c_str(), 0, false);
+            (int)pong_json.size(), pong_json.c_str(), 0, false);
         return;
     }
 }
 
 // 왜 필요한지를 살펴보기
-static void on_connect_local(struct mosquitto *mosq, void *userdata, int rc)
+static void on_connect_local(struct mosquitto* mosq, void* userdata, int rc)
 {
     if (rc != 0)
     {
@@ -487,7 +487,7 @@ static void on_connect_local(struct mosquitto *mosq, void *userdata, int rc)
         return;
     }
 
-    auto *ctx = static_cast<EdgeContext *>(userdata);
+    auto* ctx = static_cast<EdgeContext*>(userdata);
     (void)ctx;
 
     std::printf("[edge] connected to local broker\n");
@@ -499,23 +499,23 @@ static void on_connect_local(struct mosquitto *mosq, void *userdata, int rc)
     if (sub_rc != MOSQ_ERR_SUCCESS)
     {
         std::fprintf(stderr, "[edge] local subscribe failed: %s\n",
-                     mosquitto_strerror(sub_rc));
+            mosquitto_strerror(sub_rc));
         return;
     }
 
     std::printf("[edge] subscribed local topic: %s\n", topic);
 }
 
-static void on_disconnect_local(struct mosquitto * /*mosq*/, void * /*userdata*/, int rc)
+static void on_disconnect_local(struct mosquitto* /*mosq*/, void* /*userdata*/, int rc)
 {
     std::printf("[edge] disconnected from local broker (rc=%d)%s\n", rc,
-                rc != 0 ? " — waiting for reconnect" : "");
+        rc != 0 ? " — waiting for reconnect" : "");
 }
 
-static void on_message_local(struct mosquitto * /*mosq*/, void *userdata,
-                             const struct mosquitto_message *msg)
+static void on_message_local(struct mosquitto* /*mosq*/, void* userdata,
+    const struct mosquitto_message* msg)
 {
-    auto *ctx = static_cast<EdgeContext *>(userdata);
+    auto* ctx = static_cast<EdgeContext*>(userdata);
 
     if (std::strncmp(msg->topic, TOPIC_DATA_PREFIX, std::strlen(TOPIC_DATA_PREFIX)) != 0)
     {
@@ -525,7 +525,7 @@ static void on_message_local(struct mosquitto * /*mosq*/, void *userdata,
     std::string payload;
     if (msg->payload != nullptr && msg->payloadlen > 0)
     {
-        payload.assign(static_cast<char *>(msg->payload), msg->payloadlen);
+        payload.assign(static_cast<char*>(msg->payload), msg->payloadlen);
     }
 
     std::printf("[edge][local] event received\n");
@@ -536,9 +536,9 @@ static void on_message_local(struct mosquitto * /*mosq*/, void *userdata,
 }
 
 // backup core 연결 콜백
-static void on_connect_backup(struct mosquitto *mosq, void *userdata, int rc)
+static void on_connect_backup(struct mosquitto* mosq, void* userdata, int rc)
 {
-    auto *ctx = static_cast<EdgeContext *>(userdata);
+    auto* ctx = static_cast<EdgeContext*>(userdata);
 
     if (rc != 0)
     {
@@ -563,17 +563,17 @@ static void on_connect_backup(struct mosquitto *mosq, void *userdata, int rc)
     flush_store_queue(ctx);
 }
 
-static void on_disconnect_backup(struct mosquitto * /*mosq*/, void *userdata, int rc)
+static void on_disconnect_backup(struct mosquitto* /*mosq*/, void* userdata, int rc)
 {
-    auto *ctx = static_cast<EdgeContext *>(userdata);
+    auto* ctx = static_cast<EdgeContext*>(userdata);
     ctx->backup_connected = false;
 
     std::printf("[edge] disconnected from backup core (rc=%d)%s\n", rc,
-                rc != 0 ? " — waiting for reconnect" : "");
+        rc != 0 ? " — waiting for reconnect" : "");
 }
 
-static void on_message_backup(struct mosquitto *mosq, void *userdata,
-                              const struct mosquitto_message *msg)
+static void on_message_backup(struct mosquitto* mosq, void* userdata,
+    const struct mosquitto_message* msg)
 {
     // 현재 단계에서는 backup core도 core와 동일한 제어 메시지 처리 로직을 사용
     on_message_core(mosq, userdata, msg);
@@ -581,23 +581,23 @@ static void on_message_backup(struct mosquitto *mosq, void *userdata,
 
 // main =====================================================
 
-int main(int argc, char *argv[])
+int main(int argc, char* argv[])
 {
     // 인수: <broker_host> <broker_port> <core_ip> <core_port> [backup_core_ip] [backup_core_port]
     if (argc < 5)
     {
         std::fprintf(stderr,
-                     "usage: %s <broker_host> <broker_port> <core_ip> <core_port>"
-                     " [backup_core_ip] [backup_core_port]\n",
-                     argv[0]);
+            "usage: %s <broker_host> <broker_port> <core_ip> <core_port>"
+            " [backup_core_ip] [backup_core_port]\n",
+            argv[0]);
         return 1;
     }
     setvbuf(stdout, nullptr, _IOLBF, 0);  // 테스트 스크립트가 로그를 실시간 grep할 수 있도록 line-buffered 설정
-    const char *broker_host = argv[1];
+    const char* broker_host = argv[1];
     int broker_port = std::atoi(argv[2]);
-    const char *core_ip = argv[3];
+    const char* core_ip = argv[3];
     int core_port = std::atoi(argv[4]);
-    const char *backup_core_ip = (argc > 5) ? argv[5] : "";
+    const char* backup_core_ip = (argc > 5) ? argv[5] : "";
     int backup_port = (argc > 6) ? std::atoi(argv[6]) : 1883;
 
     signal(SIGINT, handle_signal);
@@ -629,7 +629,7 @@ int main(int argc, char *argv[])
     mosquitto_lib_init();
 
     // 5. core 연결용 클라이언트 생성
-    struct mosquitto *mosq_core = mosquitto_new(ctx.edge_id, true, &ctx);
+    struct mosquitto* mosq_core = mosquitto_new(ctx.edge_id, true, &ctx);
     if (!mosq_core)
     {
         std::fprintf(stderr, "[edge] mosquitto_new failed\n");
@@ -642,7 +642,7 @@ int main(int argc, char *argv[])
     char local_client_id[64];
     std::snprintf(local_client_id, sizeof(local_client_id), "%s-local", ctx.edge_id);
 
-    struct mosquitto *mosq_local = mosquitto_new(local_client_id, true, &ctx);
+    struct mosquitto* mosq_local = mosquitto_new(local_client_id, true, &ctx);
     if (!mosq_local)
     {
         std::fprintf(stderr, "[edge] mosquitto_new for local failed\n");
@@ -652,7 +652,7 @@ int main(int argc, char *argv[])
     }
 
     // 5-2. backup core 연결용 클라이언트 생성
-    struct mosquitto *mosq_backup = nullptr;
+    struct mosquitto* mosq_backup = nullptr;
     if (backup_core_ip[0] != '\0')
     {
         char backup_client_id[64];
@@ -681,15 +681,15 @@ int main(int argc, char *argv[])
         std::strncpy(lwt.source.id, ctx.edge_id, UUID_LEN - 1);
         lwt.source.id[UUID_LEN - 1] = '\0';
 
-        lwt.delivery = {1, false, false};
+        lwt.delivery = { 1, false, false };
 
         char lwt_topic[128];
         std::snprintf(lwt_topic, sizeof(lwt_topic), "%s%s",
-                      TOPIC_LWT_NODE_PREFIX, ctx.edge_id);
+            TOPIC_LWT_NODE_PREFIX, ctx.edge_id);
 
         std::string lwt_json = mqtt_message_to_json(lwt);
         mosquitto_will_set(mosq_core, lwt_topic,
-                           (int)lwt_json.size(), lwt_json.c_str(), 1, false);
+            (int)lwt_json.size(), lwt_json.c_str(), 1, false);
     }
 
     // backup core에도 동일한 LWT 설정
@@ -704,15 +704,15 @@ int main(int argc, char *argv[])
         std::strncpy(lwt_backup.source.id, ctx.edge_id, UUID_LEN - 1);
         lwt_backup.source.id[UUID_LEN - 1] = '\0';
 
-        lwt_backup.delivery = {1, false, false};
+        lwt_backup.delivery = { 1, false, false };
 
         char lwt_topic_backup[128];
         std::snprintf(lwt_topic_backup, sizeof(lwt_topic_backup), "%s%s",
-                      TOPIC_LWT_NODE_PREFIX, ctx.edge_id);
+            TOPIC_LWT_NODE_PREFIX, ctx.edge_id);
 
         std::string lwt_json_backup = mqtt_message_to_json(lwt_backup);
         mosquitto_will_set(mosq_backup, lwt_topic_backup,
-                           (int)lwt_json_backup.size(), lwt_json_backup.c_str(), 1, false);
+            (int)lwt_json_backup.size(), lwt_json_backup.c_str(), 1, false);
     }
 
     // 7. 콜백 등록
@@ -737,7 +737,7 @@ int main(int argc, char *argv[])
     if (rc != MOSQ_ERR_SUCCESS)
     {
         std::fprintf(stderr, "[edge] connect to core failed: %s\n",
-                     mosquitto_strerror(rc));
+            mosquitto_strerror(rc));
         if (mosq_backup)
             mosquitto_destroy(mosq_backup);
         mosquitto_destroy(mosq_local);
@@ -752,7 +752,7 @@ int main(int argc, char *argv[])
     if (rc_local != MOSQ_ERR_SUCCESS)
     {
         std::fprintf(stderr, "[edge] connect to local broker failed: %s\n",
-                     mosquitto_strerror(rc_local));
+            mosquitto_strerror(rc_local));
         if (mosq_backup)
             mosquitto_destroy(mosq_backup);
         mosquitto_destroy(mosq_local);
@@ -769,7 +769,7 @@ int main(int argc, char *argv[])
         if (rc_backup != MOSQ_ERR_SUCCESS)
         {
             std::fprintf(stderr, "[edge] connect to backup core failed: %s\n",
-                         mosquitto_strerror(rc_backup));
+                mosquitto_strerror(rc_backup));
             mosquitto_destroy(mosq_backup);
             mosq_backup = nullptr;
             ctx.mosq_backup = nullptr;
@@ -786,9 +786,9 @@ int main(int argc, char *argv[])
     }
 
     std::printf("[edge] %s  local=%s:%d  core=%s:%d  backup=%s\n",
-                ctx.edge_id, ctx.node_ip, broker_port,
-                core_ip, core_port,
-                backup_core_ip[0] ? backup_core_ip : "(none)");
+        ctx.edge_id, ctx.node_ip, broker_port,
+        core_ip, core_port,
+        backup_core_ip[0] ? backup_core_ip : "(none)");
 
     // mosq_local (broker_host:broker_port) 연결 — 로컬 CCTV 이벤트 수집
     // mosq_backup (backup_core_ip:backup_port) 연결 — Backup Core 유지
@@ -798,7 +798,7 @@ int main(int argc, char *argv[])
         // 주기적으로 저장된 큐 flush 시도
         flush_store_queue(&ctx);
 
-        struct timespec ts = {1, 0};
+        struct timespec ts = { 1, 0 };
         nanosleep(&ts, nullptr);
     }
 
