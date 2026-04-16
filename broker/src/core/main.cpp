@@ -58,7 +58,7 @@ static void on_message(struct mosquitto* mosq, void* userdata,
     const struct mosquitto_message* msg) {
     auto* ctx = static_cast<CoreContext*>(userdata);
 
-    // Node 비정상 종료 LWT (W-02): OFFLINE 마킹 후 CT 브로드캐스트
+    // Node 비정상 종료 LWT (W-02): OFFLINE 마킹 → CT 브로드캐스트 → node_down 알림 (FR-06)
     if (strncmp(msg->topic, "campus/will/node/", 17) == 0) {
         const char* node_id = msg->topic + 17;
         if (ctx->ct_manager->setNodeStatus(node_id, NODE_STATUS_OFFLINE)) {
@@ -66,6 +66,12 @@ static void on_message(struct mosquitto* mosq, void* userdata,
             std::string json = connection_table_to_json(ct);
             mosquitto_publish(mosq, nullptr, TOPIC_TOPOLOGY,
                 (int)json.size(), json.c_str(), 1, true);
+
+            char alert_topic[128];
+            snprintf(alert_topic, sizeof(alert_topic), "campus/alert/node_down/%s", node_id);
+            mosquitto_publish(mosq, nullptr, alert_topic,
+                (int)json.size(), json.c_str(), 1, false);
+
             printf("[core] node offline: %s  (ct.version=%d)\n", node_id, ct.version);
         }
         return;
