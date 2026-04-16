@@ -31,7 +31,7 @@ start_subscriber "$sub_log" \
 sleep 1
 
 start_active_core "$core_log" >/dev/null
-if ! wait_for_pattern "$core_log" '\[core\] connected (ACTIVE)' 10; then
+if ! wait_for_pattern "$core_log" '\[core\] connected \(ACTIVE\)' 10; then
   show_file_tail "$core_log"
   die "active core did not connect"
 fi

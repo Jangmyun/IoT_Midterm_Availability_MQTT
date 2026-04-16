@@ -40,7 +40,7 @@ start_subscriber "$sub_log" \
 sleep 1
 
 active_pid="$(start_active_core "$active_log")"
-if ! wait_for_pattern "$active_log" '\[core\] connected (ACTIVE)' 10; then
+if ! wait_for_pattern "$active_log" '\[core\] connected \(ACTIVE\)' 10; then
   show_file_tail "$active_log"
   die "active core did not connect"
 fi
@@ -48,7 +48,7 @@ fi
 active_core_id="$(extract_core_id "$active_log")"
 
 start_backup_core "$backup_log" >/dev/null
-if ! wait_for_pattern "$backup_log" '\[core\] connected (BACKUP)' 10; then
+if ! wait_for_pattern "$backup_log" '\[core\] connected \(BACKUP\)' 10; then
   show_file_tail "$backup_log"
   die "backup core did not connect"
 fi
