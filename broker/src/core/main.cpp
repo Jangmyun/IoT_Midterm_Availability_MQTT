@@ -170,7 +170,10 @@ int main(int argc, char* argv[]) {
     }
 
     // 3. mosquitto 클라이언트 생성
-    CoreContext ctx = { core_id, &ct_manager };
+    CoreContext ctx;
+    ctx.core_id = core_id;
+    ctx.ct_manager = &ct_manager;
+
     struct mosquitto* mosq = mosquitto_new(core_id, true, &ctx);
     if (!mosq) {
         fprintf(stderr, "[core] mosquitto_new failed\n");
