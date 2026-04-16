@@ -30,6 +30,7 @@ struct CoreContext {
     // Election state (FR-10)
     int  election_votes;               // 자신을 지지하는 투표 수
     char election_winner[UUID_LEN];    // 현재 라운드 최다득표 후보
+    std::unordered_set<std::string> election_voters;  // 중복 집계 방지용 voter ID
 };
 
 static void handle_signal(int) { g_running = false; }
@@ -211,7 +212,7 @@ static void on_message(struct mosquitto* mosq, void* userdata,
         return;
     }
 
-    // Election 요청 수신 (C-03): 후보 결정 후 투표 발행 (FR-10)
+    // Election 요청 수신 (C-03): 요청자를 후보로 투표 발행 (FR-10)
     if (strcmp(msg->topic, TOPIC_ELECTION_REQUEST) == 0) {
         MqttMessage req = {};
         std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
@@ -220,22 +221,19 @@ static void on_message(struct mosquitto* mosq, void* userdata,
         // 자신이 보낸 요청은 무시
         if (strcmp(req.source.id, ctx->core_id) == 0) return;
 
-        // 단순 기준: ID 사전순 비교 (RTT 미구현 시 fallback)
-        const char* candidate = (strcmp(ctx->core_id, req.source.id) < 0)
-            ? ctx->core_id : req.source.id;
-
+        // 요청자를 후보로 투표 (요청자가 선출을 원하는 것으로 간주)
         MqttMessage vote = {};
         uuid_generate(vote.msg_id);
         vote.type = MSG_TYPE_ELECTION_RESULT;
         vote.source.role = NODE_ROLE_CORE;
         strncpy(vote.source.id, ctx->core_id, UUID_LEN - 1);
-        strncpy(vote.payload.description, candidate, DESCRIPTION_LEN - 1);
+        strncpy(vote.payload.description, req.source.id, DESCRIPTION_LEN - 1);
 
         std::string vote_json = mqtt_message_to_json(vote);
         mosquitto_publish(mosq, nullptr, TOPIC_ELECTION_RESULT,
             (int)vote_json.size(), vote_json.c_str(), 1, false);
 
-        printf("[core] election vote sent: candidate=%s\n", candidate);
+        printf("[core] election vote sent: candidate=%s\n", req.source.id);
         return;
     }
 
@@ -248,7 +246,11 @@ static void on_message(struct mosquitto* mosq, void* userdata,
         // 자신이 보낸 투표는 무시
         if (strcmp(res.source.id, ctx->core_id) == 0) return;
 
+        // 중복 voter 무시
+        if (ctx->election_voters.count(res.source.id)) return;
+
         if (strcmp(res.payload.description, ctx->core_id) == 0) {
+            ctx->election_voters.insert(res.source.id);
             ctx->election_votes++;
             printf("[core] election vote received for self (%d votes)\n", ctx->election_votes);
 
@@ -256,9 +258,23 @@ static void on_message(struct mosquitto* mosq, void* userdata,
             if (ctx->election_votes >= 1) {
                 ctx->ct_manager->setActiveCoreId(ctx->core_id);
                 on_ct_changed(mosq, ctx);
+
+                // core_switch 발행 → Edge들이 수신하여 새 Active Core로 전환
+                MqttMessage sw = {};
+                uuid_generate(sw.msg_id);
+                sw.type = MSG_TYPE_STATUS;
+                sw.source.role = NODE_ROLE_CORE;
+                strncpy(sw.source.id, ctx->core_id, UUID_LEN - 1);
+                snprintf(sw.payload.description, DESCRIPTION_LEN,
+                    "%s:%d", ctx->core_ip, ctx->core_port);
+                std::string sw_json = mqtt_message_to_json(sw);
+                mosquitto_publish(mosq, nullptr, "campus/alert/core_switch",
+                    (int)sw_json.size(), sw_json.c_str(), 1, false);
+
                 ctx->is_backup = false;
                 ctx->election_votes = 0;
-                printf("[core] elected as ACTIVE (election complete)\n");
+                ctx->election_voters.clear();
+                printf("[core] elected as ACTIVE (election complete), core_switch sent\n");
             }
         }
         return;
@@ -274,9 +290,10 @@ static void on_connect_peer(struct mosquitto* mosq, void* userdata, int rc) {
     }
     printf("[core/backup] connected to active broker\n");
 
-    // Active의 CT + LWT 구독
+    // Active의 CT + LWT + Election 구독
     mosquitto_subscribe(mosq, nullptr, TOPIC_CT_SYNC, 1);
     mosquitto_subscribe(mosq, nullptr, TOPIC_CORE_WILL_ALL, 1);
+    mosquitto_subscribe(mosq, nullptr, TOPIC_ELECTION_ALL, 1);
 
     // Backup 자신의 노드 정보 전송 → Active가 merge
     auto* ctx = static_cast<CoreContext*>(userdata);
@@ -343,6 +360,70 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
             (int)sw_json.size(), sw_json.c_str(), 1, false);
 
         printf("[core/backup] core_switch sent: %s:%d\n", ctx->core_ip, ctx->core_port);
+        return;
+    }
+
+    // peer 브로커에서 Election 요청 수신 (C-03): 요청자를 후보로 투표를 peer 브로커에 발행
+    if (strcmp(msg->topic, TOPIC_ELECTION_REQUEST) == 0) {
+        MqttMessage req = {};
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+        if (!mqtt_message_from_json(json, req)) return;
+
+        if (strcmp(req.source.id, ctx->core_id) == 0) return;
+
+        MqttMessage vote = {};
+        uuid_generate(vote.msg_id);
+        vote.type = MSG_TYPE_ELECTION_RESULT;
+        vote.source.role = NODE_ROLE_CORE;
+        strncpy(vote.source.id, ctx->core_id, UUID_LEN - 1);
+        strncpy(vote.payload.description, req.source.id, DESCRIPTION_LEN - 1);
+
+        std::string vote_json = mqtt_message_to_json(vote);
+        // peer 브로커(Active 브로커)에 발행 → Active Core의 on_message()가 수신
+        mosquitto_publish(mosq, nullptr, TOPIC_ELECTION_RESULT,
+            (int)vote_json.size(), vote_json.c_str(), 1, false);
+
+        printf("[core/backup] election vote sent via peer: candidate=%s\n", req.source.id);
+        return;
+    }
+
+    // peer 브로커에서 Election 결과 수신 (C-04): 집계 → 과반 시 peer 브로커에 core_switch 발행
+    if (strcmp(msg->topic, TOPIC_ELECTION_RESULT) == 0) {
+        MqttMessage res = {};
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+        if (!mqtt_message_from_json(json, res)) return;
+
+        if (strcmp(res.source.id, ctx->core_id) == 0) return;
+        if (ctx->election_voters.count(res.source.id)) return;
+
+        if (strcmp(res.payload.description, ctx->core_id) == 0) {
+            ctx->election_voters.insert(res.source.id);
+            ctx->election_votes++;
+            printf("[core/backup] election vote received via peer for self (%d votes)\n",
+                ctx->election_votes);
+
+            if (ctx->election_votes >= 1) {
+                ctx->ct_manager->setActiveCoreId(ctx->core_id);
+                // 자신 브로커 topology 갱신
+                on_ct_changed(ctx->mosq_self, ctx);
+                // peer 브로커(Edge들이 연결된 브로커)에 core_switch 발행
+                MqttMessage sw = {};
+                uuid_generate(sw.msg_id);
+                sw.type = MSG_TYPE_STATUS;
+                sw.source.role = NODE_ROLE_CORE;
+                strncpy(sw.source.id, ctx->core_id, UUID_LEN - 1);
+                snprintf(sw.payload.description, DESCRIPTION_LEN,
+                    "%s:%d", ctx->core_ip, ctx->core_port);
+                std::string sw_json = mqtt_message_to_json(sw);
+                mosquitto_publish(mosq, nullptr, "campus/alert/core_switch",
+                    (int)sw_json.size(), sw_json.c_str(), 1, false);
+
+                ctx->is_backup = false;
+                ctx->election_votes = 0;
+                ctx->election_voters.clear();
+                printf("[core/backup] elected as ACTIVE via peer election, core_switch sent\n");
+            }
+        }
         return;
     }
 }
