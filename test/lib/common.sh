@@ -119,6 +119,17 @@ cleanup() {
     wait "$pid" 2>/dev/null || true
   done
 
+  # 테스트가 남긴 retained 메시지 초기화 (다음 테스트 격리 보장)
+  sleep 0.3
+  local retained_topics=(
+    "campus/monitor/topology"
+    "_core/sync/connection_table"
+  )
+  local topic
+  for topic in "${retained_topics[@]}"; do
+    mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -t "$topic" -n -r 2>/dev/null || true
+  done
+
   if [[ -n "${TEST_RUN_DIR:-}" && -d "$TEST_RUN_DIR" ]]; then
     rm -rf "$TEST_RUN_DIR"
   fi
