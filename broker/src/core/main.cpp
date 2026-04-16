@@ -278,6 +278,7 @@ int main(int argc, char* argv[]) {
     const char* active_core_ip   = is_backup ? argv[3] : "";
     int         active_core_port = is_backup ? atoi(argv[4]) : 0;
 
+    setvbuf(stdout, nullptr, _IOLBF, 0);  // 테스트 스크립트가 로그를 실시간 grep할 수 있도록 line-buffered 설정
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 

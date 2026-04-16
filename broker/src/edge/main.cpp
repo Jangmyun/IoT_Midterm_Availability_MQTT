@@ -592,6 +592,7 @@ int main(int argc, char *argv[])
                      argv[0]);
         return 1;
     }
+    setvbuf(stdout, nullptr, _IOLBF, 0);  // 테스트 스크립트가 로그를 실시간 grep할 수 있도록 line-buffered 설정
     const char *broker_host = argv[1];
     int broker_port = std::atoi(argv[2]);
     const char *core_ip = argv[3];
