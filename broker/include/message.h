@@ -85,7 +85,8 @@ typedef struct {
 #define TOPIC_RELAY_ALL        "campus/relay/#"               /* R-01 subscribe */
 #define TOPIC_NODE_STATUS_ALL  "campus/monitor/status/#"      /* M-03 subscribe */
 #define TOPIC_NODE_WILL_ALL    "campus/will/node/#"           /* W-02 subscribe */
-#define TOPIC_CT_SYNC          "_core/sync/connection_table"  /* C-01 Core↔Core */
+#define TOPIC_CT_SYNC          "_core/sync/connection_table"  /* C-01 Active→Backup (retained) */
+#define TOPIC_NODE_REGISTER    "_core/sync/node_register"     /* C-01 Backup→Active node sync  */
 #define TOPIC_ELECTION_ALL     "_core/election/#"             /* C-03/C-04 subscribe */
 
 // ── MQTT Topics: Edge ─────────────────────────────────────────────────────────

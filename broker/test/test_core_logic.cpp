@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include "core_helpers.h"
 #include "mqtt_json.h"
+#include "connection_table_manager.h"
 
 // ── 미니 테스트 러너 ──────────────────────────────────────────────────────────
 
@@ -201,6 +202,112 @@ static void tc_edge_registration_roundtrip() {
     end_test("TC-06: Edge 등록 STATUS JSON round-trip");
 }
 
+// ── TC-07: merge_connection_tables — 비겹침 노드 ──────────────────────────────
+
+static void tc_merge_disjoint() {
+    begin_test("TC-07: merge_connection_tables — 비겹침 노드");
+
+    // Local CT: node-1, node-2
+    ConnectionTableManager local;
+    local.init("", "");
+    {
+        NodeEntry n1 = {};
+        strncpy(n1.id, NODE_1, UUID_LEN - 1);
+        n1.role = NODE_ROLE_NODE;
+        strncpy(n1.ip, "10.0.0.1", IP_LEN - 1);
+        n1.port = 1883; n1.status = NODE_STATUS_ONLINE; n1.hop_to_core = 1;
+        local.addNode(n1);
+    }
+    {
+        NodeEntry n2 = {};
+        strncpy(n2.id, "dddddddd-0000-0000-0000-000000000004", UUID_LEN - 1);
+        n2.role = NODE_ROLE_NODE;
+        strncpy(n2.ip, "10.0.0.2", IP_LEN - 1);
+        n2.port = 1883; n2.status = NODE_STATUS_ONLINE; n2.hop_to_core = 1;
+        local.addNode(n2);
+    }
+
+    // Remote CT: node-2 (same), node-3 (new)
+    ConnectionTable remote = {};
+    {
+        NodeEntry n2 = {};
+        strncpy(n2.id, "dddddddd-0000-0000-0000-000000000004", UUID_LEN - 1);
+        n2.role = NODE_ROLE_NODE; n2.status = NODE_STATUS_ONLINE; n2.hop_to_core = 1;
+        remote.nodes[remote.node_count++] = n2;
+    }
+    {
+        NodeEntry n3 = {};
+        strncpy(n3.id, "eeeeeeee-0000-0000-0000-000000000005", UUID_LEN - 1);
+        n3.role = NODE_ROLE_NODE;
+        strncpy(n3.ip, "10.0.0.3", IP_LEN - 1);
+        n3.port = 1883; n3.status = NODE_STATUS_ONLINE; n3.hop_to_core = 1;
+        remote.nodes[remote.node_count++] = n3;
+    }
+
+    bool changed = merge_connection_tables(local, remote);
+    CHECK_TRUE(changed);
+
+    ConnectionTable result = local.snapshot();
+    CHECK_EQ(result.node_count, 3);  // node-1, node-2, node-3
+    CHECK_TRUE(local.findNode("eeeeeeee-0000-0000-0000-000000000005").has_value());
+    CHECK_TRUE(local.findNode(NODE_1).has_value());
+
+    end_test("TC-07: merge_connection_tables — 비겹침 노드");
+}
+
+// ── TC-08: merge_connection_tables — ONLINE 우선 ──────────────────────────────
+
+static void tc_merge_online_wins() {
+    begin_test("TC-08: merge_connection_tables — ONLINE 우선");
+
+    // Local: node-1 OFFLINE
+    ConnectionTableManager local;
+    local.init("", "");
+    {
+        NodeEntry n = {};
+        strncpy(n.id, NODE_1, UUID_LEN - 1);
+        n.role = NODE_ROLE_NODE;
+        strncpy(n.ip, "10.0.0.1", IP_LEN - 1);
+        n.port = 1883; n.status = NODE_STATUS_OFFLINE; n.hop_to_core = 1;
+        local.addNode(n);
+    }
+
+    // Remote: node-1 ONLINE
+    ConnectionTable remote = {};
+    {
+        NodeEntry n = {};
+        strncpy(n.id, NODE_1, UUID_LEN - 1);
+        n.role = NODE_ROLE_NODE;
+        strncpy(n.ip, "10.0.0.1", IP_LEN - 1);
+        n.port = 1883; n.status = NODE_STATUS_ONLINE; n.hop_to_core = 1;
+        remote.nodes[remote.node_count++] = n;
+    }
+
+    bool changed = merge_connection_tables(local, remote);
+    CHECK_TRUE(changed);
+
+    auto result = local.findNode(NODE_1);
+    CHECK_TRUE(result.has_value());
+    CHECK_EQ(result->status, NODE_STATUS_ONLINE);
+
+    // 역방향: Remote OFFLINE, Local ONLINE → local 유지 (변경 없음)
+    ConnectionTable remote2 = {};
+    {
+        NodeEntry n = {};
+        strncpy(n.id, NODE_1, UUID_LEN - 1);
+        n.status = NODE_STATUS_OFFLINE;
+        remote2.nodes[remote2.node_count++] = n;
+    }
+    bool changed2 = merge_connection_tables(local, remote2);
+    CHECK_FALSE(changed2);  // OFFLINE이 ONLINE을 덮지 않음
+
+    auto result2 = local.findNode(NODE_1);
+    CHECK_TRUE(result2.has_value());
+    CHECK_EQ(result2->status, NODE_STATUS_ONLINE);  // 여전히 ONLINE
+
+    end_test("TC-08: merge_connection_tables — ONLINE 우선");
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -210,6 +317,8 @@ int main() {
     tc_dedup_basic();
     tc_dedup_cap();
     tc_edge_registration_roundtrip();
+    tc_merge_disjoint();
+    tc_merge_online_wins();
 
     printf("══════════════════════════════════════\n");
     printf("  결과: %d passed, %d failed\n", g_pass, g_fail);
