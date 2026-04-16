@@ -28,7 +28,7 @@ if ! wait_for_pattern "$edge_log" '\[edge\] connected to core' 10; then
   die "edge did not connect to core"
 fi
 
-if ! wait_for_pattern "$edge_log" '\[edge\] registered:' 10; then
+if ! wait_for_pattern "$edge_log" '\[edge\] registered to core:' 10; then
   show_file_tail "$edge_log"
   die "edge did not publish registration status"
 fi
