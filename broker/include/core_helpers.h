@@ -15,3 +15,8 @@ inline bool parse_ip_port(const char* desc, char* ip_out, size_t ip_len, int* po
     *port_out = port;
     return true;
 }
+
+// Build an alert topic: "<prefix>/<id>"  e.g. "campus/alert/node_down/<uuid>"
+inline void make_alert_topic(const char* prefix, const char* id, char* buf, size_t len) {
+    snprintf(buf, len, "%s/%s", prefix, id);
+}
