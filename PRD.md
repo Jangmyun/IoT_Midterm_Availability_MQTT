@@ -459,45 +459,113 @@ typedef struct {
 
 ---
 
-## 14. 현재 개발 진행도 (2026-04-14 기준)
+## 14. 현재 개발 진행도 (2026-04-16 기준)
 
 ### 14.1 구현 완료 항목
 
-| 구성요소                                                                                                                | 파일                                             |
-| ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| ConnectionTable C 구조체 + 상수 (MAX_NODES=64, MAX_LINKS=256)                                                           | `broker/include/connection_table.h`              |
-| ConnectionTableManager — thread-safe CRUD (mutex, addNode, updateNode, setNodeStatus, addLink, updateLinkRtt, snapshot) | `broker/src/common/connection_table_manager.cpp` |
-| JSON 직렬화/역직렬화 양방향 (CT + MqttMessage, enum 변환 포함)                                                          | `broker/src/common/mqtt_json.cpp`                |
-| UUID 생성기 (RFC 4122 v4, thread-local)                                                                                 | `broker/include/uuid.h`                          |
-| MqttMessage 구조체 + 토픽 상수 19개 정의                                                                                | `broker/include/message.h`                       |
-| Core 기본 뼈대 — 연결, 7개 토픽 구독, CT Retained 발행, Node LWT(W-02) 수신                                             | `broker/src/core/main.cpp`                       |
-| Edge 기본 뼈대 — Core 연결, CT(M-04) 수신, Ping/Pong(M-01/M-02) 응답                                                    | `broker/src/edge/main.cpp`                       |
-| nlohmann/json 3.11.3 FetchContent, CMake 빌드 시스템                                                                    | `broker/CMakeLists.txt`                          |
+#### 공통 인프라
+
+| 구성요소 | 파일 |
+| -------- | ---- |
+| ConnectionTable C 구조체 + 상수 (MAX_NODES=64, MAX_LINKS=256) | `broker/include/connection_table.h` |
+| ConnectionTableManager — thread-safe CRUD (mutex, addNode, updateNode, setNodeStatus, addLink, snapshot) | `broker/src/common/connection_table_manager.cpp` |
+| JSON 직렬화/역직렬화 양방향 (CT + MqttMessage, enum 변환 포함) | `broker/src/common/mqtt_json.cpp` |
+| UUID 생성기 (RFC 4122 v4, thread-local mt19937_64) | `broker/include/uuid.h` |
+| MqttMessage 구조체 + 토픽 상수 21개 정의 (TOPIC_NODE_REGISTER 포함) | `broker/include/message.h` |
+| 순수 로직 헬퍼 — parse_ip_port, make_alert_topic, merge_connection_tables | `broker/include/core_helpers.h` |
+| nlohmann/json 3.11.3 FetchContent, 크로스플랫폼 CMake 빌드 시스템 | `broker/CMakeLists.txt` |
+| 직렬화/역직렬화 단위 테스트 (TC-01~TC-09, 9개 케이스) | `broker/test/test_json.cpp` |
+| Core 로직 단위 테스트 (TC-01~TC-08, 8개 케이스) | `broker/test/test_core_logic.cpp` |
+
+#### Core Broker (`broker/src/core/main.cpp`)
+
+| 구성요소 | 관련 FR/시나리오 |
+| -------- | --------------- |
+| argc 기반 Active/Backup 역할 자동 인식 | — |
+| Active: `<broker_host> <broker_port>` / Backup: 추가 `<active_core_ip> <active_core_port>` | — |
+| 7개 토픽 구독 + CT Retained publish (TOPIC_TOPOLOGY) | M-04 |
+| Edge 등록(M-03) 수신 → description 파싱 → CT addNode → 브로드캐스트 | 5.3 |
+| Node LWT(W-02) 수신 → OFFLINE 마킹 → CT 브로드캐스트 → `campus/alert/node_down` 발행 | FR-06, W-02, A-01 |
+| msg_id 중복 필터(unordered_set, cap=10000) + 이벤트 QoS 1 republish | FR-02, FR-03 |
+| Active Core LWT(W-01) 설정 (자신 종료 알림) | W-01 |
+| CT 양방향 동기화: TOPIC_CT_SYNC(Active→Backup, retained), TOPIC_NODE_REGISTER(Backup→Active) | FR-01, C-01 |
+| Backup mosq_peer — Active 브로커 연결, merge_connection_tables() (변경 시만 재발행) | FR-01, C-01 |
+| Backup: Active LWT 수신 → `campus/alert/core_switch` 발행 (자신 IP:Port 포함) | FR-05, FR-14, A-03 |
+
+#### Edge Broker (`broker/src/edge/main.cpp`)
+
+| 구성요소 | 관련 FR/시나리오 |
+| -------- | --------------- |
+| UUID 자동 생성 (edge_id), outbound IP 자동 감지 (UDP SOCK_DGRAM) | — |
+| mosq_core — Active Core 연결, LWT(W-02) 설정, 등록(M-03) publish | W-02, 5.3 |
+| CT(M-04) 수신 → 로컬 CT 갱신 | M-04 |
+| Ping/Pong 응답 (M-01/M-02) | M-01, M-02 |
+| mosq_local — 로컬 CCTV `campus/data/#` 구독, build_event_message() (타입·우선순위 자동 추론) | FR-01 |
+| mosq_backup — Backup Core 선택적 연결 (`[backup_core_ip] [backup_core_port]`) | FR-05 |
+| Core LWT(W-01) 수신 → prefer_backup 모드 전환, 저장 큐 즉시 flush 시도 | FR-05 |
+| Store-and-Forward FIFO 큐 (std::deque, mutex 보호) | FR-07 |
+| flush_store_queue() — Core 재연결 / Backup 연결 시 큐 재전송 | FR-07 |
+| forward_message_upstream() — core_connected / backup_connected / prefer_backup 기반 failover 라우팅 | FR-05, FR-07 |
+| on_connect_backup — Backup Core 등록 + 큐 flush | FR-05 |
+
+#### Web Client
+
+| 구성요소 | 관련 FR |
+| -------- | ------- |
+| MQTT.js WebSocket 연결 + 7개 토픽 구독 | FR-11 |
+| CT(topology) 수신 + Cytoscape 실시간 토폴로지 그래프 | FR-12 |
+| `campus/data/#` 이벤트 수신 + 로그 표시, msg_id 클라이언트 중복 필터 | FR-11 |
+| node_down / node_up 알림 처리 (A-01, A-02) | FR-13 |
+| core_switch / LWT_CORE 수신 → Backup Core 재연결 배너 | FR-14 |
+
+---
 
 ### 14.2 미완료 항목
 
-| 구성요소                                                  | 관련 FR      |
-| --------------------------------------------------------- | ------------ |
-| Core: msg_id 중복 필터링 (`unordered_set`)                | FR-02        |
-| Core: 이벤트 수신 후 Client 토픽으로 publish              | FR-03        |
-| Core: Node LWT 수신 후 `campus/alert/node_down/<id>` 발행 | FR-06        |
-| Edge: `mosq_local` (로컬 CCTV 수신) 인스턴스 추가         | FR-01, FR-07 |
-| Edge: `mosq_backup` (Backup Core 연결 유지) 인스턴스 추가 | FR-05        |
-| Edge: Core LWT 파싱 후 Backup Core로 failover             | FR-05        |
-| Edge: Store-and-Forward FIFO 큐                           | FR-07        |
-| Edge: CT 수신 후 인접 Node RTT 측정                       | FR-08        |
-| Edge: RTT + hop_to_core 기반 Relay 경로 선택              | FR-08        |
-| Web Client: MQTT.js WebSocket 연결 + 이벤트 로그          | FR-11        |
-| Web Client: Cytoscape 토폴로지 실시간 그래프              | FR-12        |
+#### Core Broker
 
-### 14.3 재수립된 개발 순서
+| 구성요소 | 관련 FR | 비고 |
+| -------- | ------- | ---- |
+| Node 복구 시 `campus/alert/node_up/<id>` 발행 | FR-13, A-02 | LWT에는 복구 감지 없음 — 별도 STATUS heartbeat 필요 |
+| CT 수신 시 version 비교 → 구버전 무시 | FR-01 | mosq_peer on_message_peer 에 TODO |
+| Core Election 메커니즘 (`_core/election/#`) | FR-10 | Phase 3 이후 |
 
-| Phase | 목표                                               | 관련 FR             | 검증 기준                                                    |
-| ----- | -------------------------------------------------- | ------------------- | ------------------------------------------------------------ |
-| **1** | End-to-End 정상 동작 (CCTV → Edge → Core → Client) | FR-02, FR-03, FR-06 | mosquitto_pub → Edge → Core → mosquitto_sub 이벤트 수신 확인 |
-| **2** | Core 장애 대응 + Store-and-Forward                 | FR-04, FR-05, FR-07 | Core 강제 종료 → Backup 전환 → 재연결 후 큐 flush 확인       |
-| **3** | RTT 측정 + Relay 경로 선택                         | FR-08               | 다수 Edge 실행 → Ping/Pong 교환 → Relay 경로 로그 확인       |
-| **4** | Web Client 이벤트 로그 + 토폴로지 그래프           | FR-11, FR-12        | 브라우저에서 실시간 이벤트 + 그래프 업데이트 확인            |
+#### Edge Broker
+
+| 구성요소 | 관련 FR | 비고 |
+| -------- | ------- | ---- |
+| CT 수신 후 version 비교 → 구버전 무시 | FR-09 | on_message_core에 TODO 주석 |
+| `campus/alert/core_switch` 수신 → 명시적 Backup Core 재연결 | FR-05 | 현재는 LWT 기반으로만 failover |
+| CT 수신 후 인접 Node에 Ping 발송 (RTT 측정 시작) | FR-08 | Phase 3 |
+| Pong 수신 → RTT 계산 + LinkEntry 갱신 | FR-08 | Phase 3 |
+| RTT + hop_to_core 기반 최적 Relay Node 선택 | FR-08 | Phase 3 |
+
+#### 기타
+
+| 구성요소 | 관련 FR | 비고 |
+| -------- | ------- | ---- |
+| CT NodeEntry에 WebSocket 포트 필드 추가 | FR-11 | failover 재연결 시 ws:// 포트 불일치 (현재 MQTT 포트 1883 저장, WS 포트 9001 필요) |
+| Core 간 부하 정보 공유 (`_core/sync/load_info`) | FR-10 | Phase 3 이후 |
+
+---
+
+### 14.3 개발 단계별 진행 현황
+
+| Phase | 목표 | 관련 FR | 상태 |
+| ----- | ---- | ------- | ---- |
+| **1** | End-to-End 정상 동작 (CCTV → Edge → Core → Client) | FR-01, FR-02, FR-03, FR-06 | ✅ 완료 |
+| **2** | Core 장애 대응 + Store-and-Forward | FR-04, FR-05, FR-07, FR-14 | ✅ 완료 |
+| **3** | RTT 측정 + Relay 경로 선택 | FR-08 | ⬜ 미착수 |
+| **4** | Web Client 이벤트 로그 + 토폴로지 그래프 | FR-11, FR-12 | ✅ 완료 |
+
+### 14.4 Phase 3 구현 계획
+
+| 항목 | 위치 | 내용 |
+| ---- | ---- | ---- |
+| Ping 발송 트리거 | `edge/main.cpp` on_message_core (CT 수신 시) | CT의 nodes 순회 → 자신과 다른 NODE 역할 노드에 Ping 발송 |
+| RTT 측정 | `edge/main.cpp` on_message_core (Pong 수신 시) | 발송 시각 기록 → Pong 수신 시각 차이 계산 → ct_manager.updateLinkRtt() |
+| Relay 경로 선택 | 별도 헬퍼 함수 | CT 스냅샷에서 NODE_STATUS_ONLINE 노드 필터 → RTT 최소 선택, RTT 동점 시 hop_to_core 최소 선택 |
+| CT 버전 비교 | `on_message_core`, `on_message_peer` | `received.version <= local.version` 이면 skip |
 
 ---
 
