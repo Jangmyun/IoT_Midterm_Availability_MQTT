@@ -34,6 +34,8 @@ static const char* msg_type_str(MsgType t) {
     case MSG_TYPE_STATUS:               return "STATUS";
     case MSG_TYPE_LWT_CORE:             return "LWT_CORE";
     case MSG_TYPE_LWT_NODE:             return "LWT_NODE";
+    case MSG_TYPE_ELECTION_REQUEST:     return "ELECTION_REQ";
+    case MSG_TYPE_ELECTION_RESULT:      return "ELECTION_RES";
     default:                            return "UNKNOWN";
     }
 }
@@ -48,6 +50,8 @@ static MsgType msg_type_from_str(const std::string& s) {
     if (s == "STATUS")          return MSG_TYPE_STATUS;
     if (s == "LWT_CORE")        return MSG_TYPE_LWT_CORE;
     if (s == "LWT_NODE")        return MSG_TYPE_LWT_NODE;
+    if (s == "ELECTION_REQ")    return MSG_TYPE_ELECTION_REQUEST;
+    if (s == "ELECTION_RES")    return MSG_TYPE_ELECTION_RESULT;
     return MSG_TYPE_UNKNOWN;
 }
 

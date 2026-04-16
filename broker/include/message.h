@@ -22,6 +22,8 @@ typedef enum {
     MSG_TYPE_STATUS,
     MSG_TYPE_LWT_CORE,
     MSG_TYPE_LWT_NODE,
+    MSG_TYPE_ELECTION_REQUEST,   /* C-03: 선출 요청 */
+    MSG_TYPE_ELECTION_RESULT,    /* C-04: 선출 결과(투표) */
     MSG_TYPE_UNKNOWN
 } MsgType;
 
@@ -88,6 +90,8 @@ typedef struct {
 #define TOPIC_CT_SYNC          "_core/sync/connection_table"  /* C-01 Active→Backup (retained) */
 #define TOPIC_NODE_REGISTER    "_core/sync/node_register"     /* C-01 Backup→Active node sync  */
 #define TOPIC_ELECTION_ALL     "_core/election/#"             /* C-03/C-04 subscribe */
+#define TOPIC_ELECTION_REQUEST "_core/election/request"       /* C-03: 선출 요청 */
+#define TOPIC_ELECTION_RESULT  "_core/election/result"        /* C-04: 선출 결과(투표) */
 
 // ── MQTT Topics: Edge ─────────────────────────────────────────────────────────
 #define TOPIC_LWT_NODE_PREFIX  "campus/will/node/"            /* W-02 LWT publish prefix */
