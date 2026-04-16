@@ -103,7 +103,10 @@ export default function App() {
           {alerts.map((a, i) => (
             <div key={i} className={`alert-item alert-item--${a.topic.includes('node_down') ? 'down' : a.topic.includes('node_up') ? 'up' : 'core'}`}>
               <strong>{a.topic}</strong>
-              {a.msg && <span> — {a.msg.type}{a.msg.payload?.description ? `: ${a.msg.payload.description}` : ''}</span>}
+              {/* node_down / node_up: CT 페이로드 → nodeId + CT version 표시 */}
+              {a.nodeId && <span> — node: {a.nodeId.slice(0, 8)}…{a.ct ? ` (ct.v${a.ct.version})` : ''}</span>}
+              {/* core_switch / will/core: MqttMessage 페이로드 */}
+              {!a.nodeId && a.msg && <span> — {a.msg.type}{a.msg.payload?.description ? `: ${a.msg.payload.description}` : ''}</span>}
             </div>
           ))}
         </div>

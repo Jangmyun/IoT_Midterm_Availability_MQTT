@@ -14,5 +14,9 @@ sleep 1
 "$SCRIPT_DIR/05_node_down.sh"
 sleep 1
 "$SCRIPT_DIR/06_node_up.sh"
+sleep 1
+"$SCRIPT_DIR/07_core_switch.sh"
+sleep 1
+"$SCRIPT_DIR/08_core_lwt.sh"
 
 printf '[test] smoke sequence completed\n'
