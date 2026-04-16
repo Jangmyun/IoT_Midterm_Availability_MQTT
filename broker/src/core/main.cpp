@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <csignal>
 #include <ctime>
+#include <string>
+#include <unordered_set>
 #include <mosquitto.h>
 #include "connection_table_manager.h"
 #include "mqtt_json.h"
@@ -13,8 +15,9 @@
 static volatile bool g_running = true;
 
 struct CoreContext {
-    const char* core_id;
-    ConnectionTableManager* ct_manager;
+    const char*                     core_id;
+    ConnectionTableManager*         ct_manager;
+    std::unordered_set<std::string> seen_msg_ids;
 };
 
 static void handle_signal(int) { g_running = false; }
