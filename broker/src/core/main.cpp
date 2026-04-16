@@ -26,6 +26,10 @@ struct CoreContext {
     std::unordered_set<std::string> seen_msg_ids;
     struct mosquitto*               mosq_self;  // own broker connection
     struct mosquitto*               mosq_peer;  // Backup → Active's broker
+
+    // Election state (FR-10)
+    int  election_votes;               // 자신을 지지하는 투표 수
+    char election_winner[UUID_LEN];    // 현재 라운드 최다득표 후보
 };
 
 static void handle_signal(int) { g_running = false; }
@@ -147,9 +151,26 @@ static void on_message(struct mosquitto* mosq, void* userdata,
         node.status = NODE_STATUS_ONLINE;
         node.hop_to_core = 1;
 
-        ctx->ct_manager->addNode(node);
-        on_ct_changed(mosq, ctx);
-        printf("[core] edge registered: %s  %s:%d\n", node.id, node_ip, node_port);
+        auto existing = ctx->ct_manager->findNode(reg.source.id);
+        if (existing && existing->status == NODE_STATUS_OFFLINE) {
+            // Node 복구: OFFLINE → ONLINE (FR-13, A-02)
+            ctx->ct_manager->setNodeStatus(reg.source.id, NODE_STATUS_ONLINE);
+            on_ct_changed(mosq, ctx);
+
+            char alert_topic[128];
+            snprintf(alert_topic, sizeof(alert_topic), "campus/alert/node_up/%s", reg.source.id);
+            ConnectionTable ct = ctx->ct_manager->snapshot();
+            std::string ct_json = connection_table_to_json(ct);
+            mosquitto_publish(mosq, nullptr, alert_topic,
+                (int)ct_json.size(), ct_json.c_str(), 1, false);
+
+            printf("[core] node recovered: %s  (ct.version=%d)\n", reg.source.id, ct.version);
+        } else if (!existing) {
+            ctx->ct_manager->addNode(node);
+            on_ct_changed(mosq, ctx);
+            printf("[core] edge registered: %s  %s:%d\n", node.id, node_ip, node_port);
+        }
+        // else: already ONLINE, ignore duplicate
         return;
     }
 
@@ -158,6 +179,9 @@ static void on_message(struct mosquitto* mosq, void* userdata,
         ConnectionTable remote;
         std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
         if (!connection_table_from_json(json, remote)) return;
+
+        // 구버전 CT 무시 (FR-01)
+        if (remote.version <= ctx->ct_manager->snapshot().version) return;
 
         if (merge_connection_tables(*ctx->ct_manager, remote)) {
             publish_topology(mosq, ctx);
@@ -184,6 +208,59 @@ static void on_message(struct mosquitto* mosq, void* userdata,
         mosquitto_publish(mosq, nullptr, msg->topic,
             msg->payloadlen, msg->payload, 1, false);
         printf("[core] event forwarded: %s  (msg_id=%.8s)\n", msg->topic, evt.msg_id);
+        return;
+    }
+
+    // Election 요청 수신 (C-03): 후보 결정 후 투표 발행 (FR-10)
+    if (strcmp(msg->topic, TOPIC_ELECTION_REQUEST) == 0) {
+        MqttMessage req = {};
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+        if (!mqtt_message_from_json(json, req)) return;
+
+        // 자신이 보낸 요청은 무시
+        if (strcmp(req.source.id, ctx->core_id) == 0) return;
+
+        // 단순 기준: ID 사전순 비교 (RTT 미구현 시 fallback)
+        const char* candidate = (strcmp(ctx->core_id, req.source.id) < 0)
+            ? ctx->core_id : req.source.id;
+
+        MqttMessage vote = {};
+        uuid_generate(vote.msg_id);
+        vote.type = MSG_TYPE_ELECTION_RESULT;
+        vote.source.role = NODE_ROLE_CORE;
+        strncpy(vote.source.id, ctx->core_id, UUID_LEN - 1);
+        strncpy(vote.payload.description, candidate, DESCRIPTION_LEN - 1);
+
+        std::string vote_json = mqtt_message_to_json(vote);
+        mosquitto_publish(mosq, nullptr, TOPIC_ELECTION_RESULT,
+            (int)vote_json.size(), vote_json.c_str(), 1, false);
+
+        printf("[core] election vote sent: candidate=%s\n", candidate);
+        return;
+    }
+
+    // Election 결과 수신 (C-04): 투표 집계 → 과반 시 ACTIVE 선언 (FR-10)
+    if (strcmp(msg->topic, TOPIC_ELECTION_RESULT) == 0) {
+        MqttMessage res = {};
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+        if (!mqtt_message_from_json(json, res)) return;
+
+        // 자신이 보낸 투표는 무시
+        if (strcmp(res.source.id, ctx->core_id) == 0) return;
+
+        if (strcmp(res.payload.description, ctx->core_id) == 0) {
+            ctx->election_votes++;
+            printf("[core] election vote received for self (%d votes)\n", ctx->election_votes);
+
+            // 과반 달성 (2-core 환경에서는 1표면 충분)
+            if (ctx->election_votes >= 1) {
+                ctx->ct_manager->setActiveCoreId(ctx->core_id);
+                on_ct_changed(mosq, ctx);
+                ctx->is_backup = false;
+                ctx->election_votes = 0;
+                printf("[core] elected as ACTIVE (election complete)\n");
+            }
+        }
         return;
     }
 }
@@ -220,6 +297,14 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
         ConnectionTable remote;
         std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
         if (!connection_table_from_json(json, remote)) return;
+
+        // 구버전 CT 무시 (FR-01)
+        int local_ver = ctx->ct_manager->snapshot().version;
+        if (remote.version <= local_ver) {
+            printf("[core/backup] skip stale CT (remote=%d <= local=%d)\n",
+                remote.version, local_ver);
+            return;
+        }
 
         // Active의 active_core_id 반영
         if (remote.active_core_id[0] != '\0') {

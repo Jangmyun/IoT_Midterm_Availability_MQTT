@@ -459,7 +459,7 @@ typedef struct {
 
 ---
 
-## 14. 현재 개발 진행도 (2026-04-16 기준)
+## 14. 현재 개발 진행도 (2026-04-17 기준)
 
 ### 14.1 구현 완료 항목
 
@@ -491,6 +491,9 @@ typedef struct {
 | CT 양방향 동기화: TOPIC_CT_SYNC(Active→Backup, retained), TOPIC_NODE_REGISTER(Backup→Active) | FR-01, C-01 |
 | Backup mosq_peer — Active 브로커 연결, merge_connection_tables() (변경 시만 재발행) | FR-01, C-01 |
 | Backup: Active LWT 수신 → `campus/alert/core_switch` 발행 (자신 IP:Port 포함) | FR-05, FR-14, A-03 |
+| CT 수신 시 version 비교 → 구버전 무시 (`on_message`, `on_message_peer`) | FR-01 |
+| Node 복구(OFFLINE→ONLINE) 감지 → `campus/alert/node_up/<id>` 발행 | FR-13, A-02 |
+| Core Election — `_core/election/request` 투표, `_core/election/result` 집계 → ACTIVE 전환 | FR-10, C-03, C-04 |
 
 #### Edge Broker (`broker/src/edge/main.cpp`)
 
@@ -498,7 +501,7 @@ typedef struct {
 | -------- | --------------- |
 | UUID 자동 생성 (edge_id), outbound IP 자동 감지 (UDP SOCK_DGRAM) | — |
 | mosq_core — Active Core 연결, LWT(W-02) 설정, 등록(M-03) publish | W-02, 5.3 |
-| CT(M-04) 수신 → 로컬 CT 갱신 | M-04 |
+| CT(M-04) 수신 → version 비교 후 구버전 무시, 최신 CT를 `ct_manager`에 반영 | M-04, FR-01, FR-09 |
 | Ping/Pong 응답 (M-01/M-02) | M-01, M-02 |
 | mosq_local — 로컬 CCTV `campus/data/#` 구독, build_event_message() (타입·우선순위 자동 추론) | FR-01 |
 | mosq_backup — Backup Core 선택적 연결 (`[backup_core_ip] [backup_core_port]`) | FR-05 |
@@ -526,16 +529,15 @@ typedef struct {
 
 | 구성요소 | 관련 FR | 비고 |
 | -------- | ------- | ---- |
-| Node 복구 시 `campus/alert/node_up/<id>` 발행 | FR-13, A-02 | LWT에는 복구 감지 없음 — 별도 STATUS heartbeat 필요 |
-| CT 수신 시 version 비교 → 구버전 무시 | FR-01 | mosq_peer on_message_peer 에 TODO |
-| Core Election 메커니즘 (`_core/election/#`) | FR-10 | Phase 3 이후 |
+| Election 분산 환경 지원 — `on_connect_peer()`에서 `_core/election/#` 추가 구독 | FR-10 | 현재 Election은 단일 브로커 한정 동작 (하단 설계 제약 참고) |
+| Election 성공 시 peer 브로커(Edge 연결 브로커)에 `campus/alert/core_switch` 발행 | FR-10, FR-14 | 현재 자신의 브로커에만 topology 발행 — Edge가 수신 불가 |
 
 #### Edge Broker
 
 | 구성요소 | 관련 FR | 비고 |
 | -------- | ------- | ---- |
-| CT 수신 후 version 비교 → 구버전 무시 | FR-09 | on_message_core에 TODO 주석 |
 | `campus/alert/core_switch` 수신 → 명시적 Backup Core 재연결 | FR-05 | 현재는 LWT 기반으로만 failover |
+| CT 수신 후 `active_core_id` 변경 감지 → 새 Active Core로 명시적 재연결 | FR-05, FR-10 | 현재 CT 적용 후 재연결 로직 없음 |
 | CT 수신 후 인접 Node에 Ping 발송 (RTT 측정 시작) | FR-08 | Phase 3 |
 | Pong 수신 → RTT 계산 + LinkEntry 갱신 | FR-08 | Phase 3 |
 | RTT + hop_to_core 기반 최적 Relay Node 선택 | FR-08 | Phase 3 |
@@ -549,6 +551,45 @@ typedef struct {
 
 ---
 
+### 14.2.1 설계 제약 — Election과 Edge 재연결
+
+#### Election의 단일 브로커 한계
+
+현재 Election 메커니즘은 `on_message()` (자신 브로커 수신)에만 구현되어 있어, **두 Core가 서로 다른 mosquitto 인스턴스를 운영하는 분산 환경에서는 동작하지 않는다.**
+
+```
+실제 분산 환경 (브로커 2개):
+
+  Core A 브로커  ←── Edge들 연결됨
+      ↑
+  Core B (mosq_peer)  ←── TOPIC_CT_SYNC + TOPIC_CORE_WILL_ALL 만 구독
+                           _core/election/# 는 구독 안 함
+      ↓
+  Core B 브로커  ←── Core B 자체 운영
+
+  → Core A 브로커에 _core/election/request 발행해도 Core B는 수신 불가
+```
+
+**테스트(08_election.sh)가 통과되는 이유**: Core A·B가 동일한 mosquitto 인스턴스를 공유하기 때문.
+
+**수정 방향**:
+1. `on_connect_peer()`에서 `TOPIC_ELECTION_ALL` 추가 구독
+2. Election 성공(ACTIVE 전환) 시 `mosq_peer`(Edge들이 연결된 브로커)에도 `campus/alert/core_switch` 발행
+
+#### Election 후 Edge 재연결 부재
+
+Election으로 Core B가 ACTIVE가 되어도, Edge는 새 Active Core의 IP:Port를 알 수 없다.
+
+| 조건 | Edge가 새 Active Core IP:Port를 아는가? |
+|---|---|
+| 단일 브로커 테스트 환경 | ✅ topology 수신, CT의 NodeEntry에 IP:Port 포함 |
+| 실제 2-브로커 환경 (Election 경유) | ❌ election 미전달 + topology가 Core B 브로커에만 발행됨 |
+| 실제 2-브로커 환경 (Active SIGKILL → LWT 경유) | ✅ `campus/alert/core_switch` payload에 `ip:port` 명시, Edge가 `prefer_backup` 전환 |
+
+**결론**: 현재 구현에서 실제 분산 환경의 Core 전환은 **LWT → `core_switch` 경로만 올바르게 동작**한다. Election은 단일 브로커 시나리오 전용이며, 실제 분산 환경 지원을 위해서는 위 수정 방향 적용이 필요하다.
+
+---
+
 ### 14.3 개발 단계별 진행 현황
 
 | Phase | 목표 | 관련 FR | 상태 |
@@ -557,15 +598,39 @@ typedef struct {
 | **2** | Core 장애 대응 + Store-and-Forward | FR-04, FR-05, FR-07, FR-14 | ✅ 완료 |
 | **3** | RTT 측정 + Relay 경로 선택 | FR-08 | ⬜ 미착수 |
 | **4** | Web Client 이벤트 로그 + 토폴로지 그래프 | FR-11, FR-12 | ✅ 완료 |
+| **5** | Core 미완료 항목 (CT version 비교, Node 복구, Election) | FR-01, FR-10, FR-13 | ✅ 완료 |
 
-### 14.4 Phase 3 구현 계획
+### 14.4 Phase 5 구현 완료 항목 (2026-04-17)
+
+#### Core Broker
+
+| 구성요소 | 관련 FR | 구현 위치 |
+| -------- | ------- | --------- |
+| CT 수신 시 version 비교 → 구버전 무시 (`on_message_peer`, `on_message`) | FR-01 | `broker/src/core/main.cpp` |
+| Node 복구(OFFLINE→ONLINE) 감지 → `campus/alert/node_up/<id>` 발행 | FR-13, A-02 | `broker/src/core/main.cpp` |
+| Core Election 메커니즘 — `_core/election/request` 수신 시 ID 비교 투표, `_core/election/result` 집계 후 ACTIVE 전환 | FR-10, C-03, C-04 | `broker/src/core/main.cpp` |
+| `MSG_TYPE_ELECTION_REQUEST` / `ELECTION_RESULT` 타입 및 토픽 상수 추가 | FR-10 | `broker/include/message.h`, `broker/src/common/mqtt_json.cpp` |
+
+#### Edge Broker
+
+| 구성요소 | 관련 FR | 구현 위치 |
+| -------- | ------- | --------- |
+| CT 수신 후 version 비교 → 구버전 무시, 최신 CT를 `ct_manager`에 반영 | FR-01, FR-09 | `broker/src/edge/main.cpp` |
+
+#### 시나리오 테스트
+
+| 스크립트 | 검증 내용 |
+| -------- | --------- |
+| `test/core/07_node_recovery.sh` | Node LWT → OFFLINE → M-03 재발행 → `campus/alert/node_up` 수신 확인 |
+| `test/core/08_election.sh` | `_core/election/request` 발행 → `_core/election/result` 수신 → topology 갱신 확인 |
+
+### 14.5 Phase 3 구현 계획
 
 | 항목 | 위치 | 내용 |
 | ---- | ---- | ---- |
 | Ping 발송 트리거 | `edge/main.cpp` on_message_core (CT 수신 시) | CT의 nodes 순회 → 자신과 다른 NODE 역할 노드에 Ping 발송 |
 | RTT 측정 | `edge/main.cpp` on_message_core (Pong 수신 시) | 발송 시각 기록 → Pong 수신 시각 차이 계산 → ct_manager.updateLinkRtt() |
 | Relay 경로 선택 | 별도 헬퍼 함수 | CT 스냅샷에서 NODE_STATUS_ONLINE 노드 필터 → RTT 최소 선택, RTT 동점 시 hop_to_core 최소 선택 |
-| CT 버전 비교 | `on_message_core`, `on_message_peer` | `received.version <= local.version` 이면 skip |
 
 ---
 

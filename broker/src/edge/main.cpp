@@ -49,6 +49,8 @@ struct EdgeContext
     std::deque<QueuedEvent> store_queue;
     std::mutex queue_mutex;
     std::mutex flush_mutex;
+
+    int last_ct_version = 0;  // 마지막 수신한 CT 버전 (구버전 무시용)
 };
 
 static void handle_signal(int) { g_running = false; }
@@ -419,9 +421,23 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
         std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
         if (connection_table_from_json(json, ct))
         {
-            std::printf("[edge] CT received (version=%d, nodes=%d)\n",
-                ct.version, ct.node_count);
-            // TODO: version 비교 후 구버전 무시, RTT 측정 → relay 경로 초기화
+            if (ct.version <= ctx->last_ct_version)
+            {
+                std::printf("[edge] skip stale CT (remote=%d <= local=%d)\n",
+                    ct.version, ctx->last_ct_version);
+                return;
+            }
+            if (ct.active_core_id[0] != '\0')
+                ctx->ct_manager->setActiveCoreId(ct.active_core_id);
+            for (int i = 0; i < ct.node_count; i++)
+            {
+                if (!ctx->ct_manager->addNode(ct.nodes[i]))
+                    ctx->ct_manager->updateNode(ct.nodes[i]);
+            }
+            for (int i = 0; i < ct.link_count; i++)
+                ctx->ct_manager->addLink(ct.links[i]);
+            ctx->last_ct_version = ct.version;
+            std::printf("[edge] CT applied (version=%d, nodes=%d)\n", ct.version, ct.node_count);
         }
         return;
     }

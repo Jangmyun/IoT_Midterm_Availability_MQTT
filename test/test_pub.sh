@@ -31,6 +31,8 @@ Usage: ./test/test_pub.sh <case>
   core_event_dedup
   core_ct_sync
   core_core_switch
+  core_node_recovery
+  core_election
 
 [edge] edge_broker 동작 검증 (BUILD_DIR 또는 EDGE_BINARY 필요):
   edge_ping_pong
@@ -74,6 +76,8 @@ core/node_offline
 core/event_dedup
 core/ct_sync
 core/core_switch
+core/node_recovery
+core/election
 edge/ping_pong
 edge/lwt
 EOF
@@ -116,6 +120,8 @@ run_all_core() {
   try_run_binary_test "$SCRIPT_DIR/core/04_event_dedup.sh"  "core/04_event_dedup"
   try_run_binary_test "$SCRIPT_DIR/core/05_ct_sync.sh"      "core/05_ct_sync"
   try_run_binary_test "$SCRIPT_DIR/core/06_core_switch.sh"  "core/06_core_switch"
+  try_run_binary_test "$SCRIPT_DIR/core/07_node_recovery.sh" "core/07_node_recovery"
+  try_run_binary_test "$SCRIPT_DIR/core/08_election.sh"      "core/08_election"
   printf '[test] all_core completed\n'
 }
 
@@ -147,7 +153,9 @@ case "${1:-help}" in
   core_node_offline)  exec "$SCRIPT_DIR/core/03_node_offline.sh" ;;
   core_event_dedup)   exec "$SCRIPT_DIR/core/04_event_dedup.sh" ;;
   core_ct_sync)       exec "$SCRIPT_DIR/core/05_ct_sync.sh" ;;
-  core_core_switch)   exec "$SCRIPT_DIR/core/06_core_switch.sh" ;;
+  core_core_switch)     exec "$SCRIPT_DIR/core/06_core_switch.sh" ;;
+  core_node_recovery)  exec "$SCRIPT_DIR/core/07_node_recovery.sh" ;;
+  core_election)       exec "$SCRIPT_DIR/core/08_election.sh" ;;
   # edge
   edge_ping_pong)     exec "$SCRIPT_DIR/edge/01_ping_pong.sh" ;;
   edge_lwt)           exec "$SCRIPT_DIR/edge/02_lwt.sh" ;;
