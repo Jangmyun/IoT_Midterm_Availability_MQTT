@@ -28,10 +28,12 @@ if ! wait_for_pattern "$sub_log" "campus/will/core/$core_id" 10; then
   die "core LWT topic was not observed"
 fi
 
-if ! wait_for_pattern "$sub_log" "$BACKUP_CORE_IP:$BACKUP_CORE_PORT" 10; then
+# Active Core LWT는 종료 알림만 포함 (backup 정보 없음).
+# Failover IP:Port 는 Backup Core가 core_switch 토픽으로 별도 전달 (CORE-06 참조).
+if ! wait_for_pattern "$sub_log" 'LWT_CORE' 10; then
   show_file_tail "$sub_log"
-  die "backup core endpoint not found in LWT payload"
+  die "core LWT payload does not contain LWT_CORE type"
 fi
 
-log "core LWT ok: core_id=$core_id backup=$BACKUP_CORE_IP:$BACKUP_CORE_PORT"
+log "core LWT ok: core_id=$core_id"
 log "logs kept in $TEST_RUN_DIR until script exit"
