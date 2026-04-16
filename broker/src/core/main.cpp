@@ -78,6 +78,36 @@ static void on_message(struct mosquitto* mosq, void* userdata,
         return;
     }
 
+    // Edge 등록 (M-03): CT에 추가 후 브로드캐스트
+    if (strncmp(msg->topic, "campus/monitor/status/", 22) == 0) {
+        MqttMessage reg;
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+        if (!mqtt_message_from_json(json, reg)) return;
+
+        char node_ip[IP_LEN] = {};
+        int  node_port = 0;
+        if (!parse_ip_port(reg.payload.description, node_ip, sizeof(node_ip), &node_port)) {
+            fprintf(stderr, "[core] bad status description: '%s'\n", reg.payload.description);
+            return;
+        }
+
+        NodeEntry node = {};
+        strncpy(node.id, reg.source.id, UUID_LEN - 1);
+        node.role = NODE_ROLE_NODE;
+        strncpy(node.ip, node_ip, IP_LEN - 1);
+        node.port = (uint16_t)node_port;
+        node.status = NODE_STATUS_ONLINE;
+        node.hop_to_core = 1;
+
+        ctx->ct_manager->addNode(node);
+        ConnectionTable ct = ctx->ct_manager->snapshot();
+        std::string ct_json = connection_table_to_json(ct);
+        mosquitto_publish(mosq, nullptr, TOPIC_TOPOLOGY,
+            (int)ct_json.size(), ct_json.c_str(), 1, true);
+        printf("[core] edge registered: %s  %s:%d  (ct.version=%d)\n",
+            node.id, node_ip, node_port, ct.version);
+        return;
+    }
     // Core 간 CT 동기화 (C-01) — TODO: peer CT merge
     if (strcmp(msg->topic, TOPIC_CT_SYNC) == 0) {
         return;
