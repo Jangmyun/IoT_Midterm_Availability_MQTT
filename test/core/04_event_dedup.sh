@@ -31,7 +31,7 @@ sleep 1
 mqtt_publish_json "campus/data/MOTION" 1 false "$payload"
 
 # Core가 첫 번째 이벤트를 재발행할 때까지 대기
-if ! wait_for_pattern "$core_log" "event forwarded.*$fixed_msg_id" 10; then
+if ! wait_for_pattern "$core_log" 'event forwarded: campus/data/MOTION' 10; then
   show_file_tail "$core_log"
   die "core did not forward the first event"
 fi
@@ -39,7 +39,7 @@ fi
 # 충분히 기다린 후 재발행 횟수 확인 (1회여야 함)
 sleep 2
 
-count="$(grep -c "event forwarded.*$fixed_msg_id" "$core_log" || true)"
+count="$(grep -c 'event forwarded: campus/data/MOTION' "$core_log" || true)"
 if [[ "$count" -ne 1 ]]; then
   show_file_tail "$core_log"
   die "core forwarded duplicate event: expected 1 forward, got $count"
