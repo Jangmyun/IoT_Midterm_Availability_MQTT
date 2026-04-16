@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(ctest:*)",
-      "Bash(cmake --build broker/build)"
+      "Bash(cmake --build broker/build)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
