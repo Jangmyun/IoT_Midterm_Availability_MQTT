@@ -45,7 +45,11 @@ When your changes create orphans:
 
 The test: Every changed line should trace directly to the user's request.
 
-## 4. Goal-Driven Execution
+## 4. Branch Safety
+
+Before switching branches, always run `git status` and `git stash list` to confirm there are no uncommitted changes or untracked files that could be lost or accidentally carried over.
+
+## 5. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
 
