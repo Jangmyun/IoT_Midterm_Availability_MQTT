@@ -621,6 +621,28 @@ Phase 5+/6 구현으로 이전 설계 제약이 모두 해소되었다.
 | `test/edge/03_core_switch.sh` | `campus/alert/core_switch` 수신 → Edge 재연결 시도 로그 확인 |
 | `test/edge/04_ct_active_core_change.sh` | CT v1→v2 `active_core_id` 변경 감지 후 재연결 시도 확인 |
 
+#### 통합 테스트 (Python/pytest) — `test/integration/`
+
+paho-mqtt 2.x + pytest 기반 통합 테스트. 실제 바이너리(`core_broker`, `edge_broker`)를 subprocess로 기동해 Client-Core-Edge 간 상호작용을 end-to-end 검증한다.
+
+| 파일 | 시나리오 | 검증 항목 | 관련 FR |
+| ---- | -------- | --------- | ------- |
+| `test_01_e2e.py` | 이벤트 종단간 전달 | Publisher → `campus/data/INTRUSION` → Core 재발행 → Spy 수신, 필드(type·priority·payload) 보존 | FR-01, FR-03 |
+| `test_02_failover.py` | Core 페일오버 | Active SIGKILL → LWT → Backup이 `campus/alert/core_switch` 발행, Edge 로그에 재연결 시도 확인 | FR-04, FR-05, FR-14 |
+| `test_03_node_lifecycle.py` | Node 장애·복구 | LWT 시뮬 → `campus/alert/node_down` OFFLINE 수신, 재등록 → `campus/alert/node_up` ONLINE 수신 | FR-06, FR-13 |
+| `test_04_dedup.py` | 이벤트 중복 방지 | 동일 `msg_id` 2회 발행 → Core 로그 `event forwarded` 1회, 다른 `msg_id` → 각각 재발행 | FR-02 |
+| `test_05_ct_sync.py` | CT 동기화 | 노드 등록 후 `_core/sync/connection_table` 갱신·발행, CT에 node_id 포함, version 증가, Backup 수신 확인 | FR-01, C-01 |
+
+공통 인프라 (`test/integration/conftest.py`):
+
+| 구성요소 | 역할 |
+| -------- | ---- |
+| `MqttSpy` | 지정 토픽 구독·누적, `wait_for` / `wait_payload` / `count` 제공 |
+| `run_proc()` | 바이너리 subprocess 기동, startup log 패턴 대기, 컨텍스트 종료 시 SIGTERM |
+| `active_core` / `backup_core` / `edge` fixtures | 각 바이너리 기동·정리 자동화 |
+| `make_event()` / `make_status_msg()` | 이벤트·STATUS 메시지 dict 생성 헬퍼 |
+| `wait_log()` | 로그 파일에서 regex 패턴 대기 |
+
 ### 14.5 Phase 3 구현 계획
 
 | 항목 | 위치 | 내용 |
