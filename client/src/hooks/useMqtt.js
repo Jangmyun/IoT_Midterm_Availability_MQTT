@@ -30,7 +30,9 @@ export function useMqtt() {
   // node_down/node_up 알림 중복 제거용: "topic:ct.version" 형태 키
   const seenAlertKeys  = useRef(new Set());
   // topology를 ref로도 보관 — message 핸들러가 클로저 내에서 최신값을 참조해야 함
-  const topologyRef    = useRef(null);
+  const topologyRef        = useRef(null);
+  // failover 이벤트(LWT/core_switch) 수신 시 true → 다음 CT 한 번은 버전 가드 무시
+  const forceAcceptNextRef = useRef(false);
 
   useEffect(() => {
     const client = mqtt.connect(brokerUrl, {
@@ -62,8 +64,9 @@ export function useMqtt() {
         const parsed = parseConnectionTable(raw);
         if (!parsed) return;
         setTopology(prev => {
-          // version guard: 구버전 CT는 무시
-          if (prev && parsed.version <= prev.version) return prev;
+          // version guard: 구버전 CT는 무시. failover 이벤트 후 한 번은 강제 수락
+          if (!forceAcceptNextRef.current && prev && parsed.version <= prev.version) return prev;
+          forceAcceptNextRef.current = false;
           topologyRef.current = parsed;
           return parsed;
         });
@@ -121,6 +124,7 @@ export function useMqtt() {
         setTimeout(() => {
           setAlerts(prev => prev.filter(a => a.ts !== alert.ts));
         }, ALERT_TTL_MS);
+        forceAcceptNextRef.current = true;
         reconnectToBackup('A-03');
         return;
       }
@@ -138,6 +142,7 @@ export function useMqtt() {
         setTimeout(() => {
           setAlerts(prev => prev.filter(a => a.ts !== alert.ts));
         }, ALERT_TTL_MS);
+        forceAcceptNextRef.current = true;
         reconnectToBackup('W-01');
         return;
       }
