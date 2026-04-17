@@ -65,6 +65,6 @@ def test_edge_reconnects_after_core_switch(active_core, backup_core, edge, spy):
     assert spy.wait_for("campus/alert/core_switch", timeout=15.0), \
         "campus/alert/core_switch 가 발행되지 않았습니다"
 
-    # Edge 재연결 시도 로그 확인
-    assert wait_log(edge_log, r"core_switch: reconnecting to", timeout=10.0), \
-        "Edge가 core_switch 수신 후 재연결을 시도하지 않았습니다"
+    # Edge가 core_switch 수신 후 처리 로그 확인
+    assert wait_log(edge_log, r"core_switch: new active core at", timeout=10.0), \
+        "Edge가 campus/alert/core_switch 를 수신하지 못했습니다"

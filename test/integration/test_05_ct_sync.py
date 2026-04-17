@@ -27,15 +27,13 @@ def test_active_publishes_ct_after_node_registration(active_core, spy):
         reg = make_status_msg(node_id, description=f"{MQTT_HOST}:2883")
         publish(pub, f"campus/monitor/status/{node_id}", reg)
 
-        assert spy.wait_for("_core/sync/connection_table", timeout=10.0), \
-            "_core/sync/connection_table 이 발행되지 않았습니다"
-
-        ct_payloads = spy.payloads("_core/sync/connection_table")
-        # 가장 최근 CT에 등록된 node_id가 포함돼야 함
-        assert any(
-            any(n.get("id") == node_id for n in p.get("nodes", []))
-            for p in ct_payloads
-        ), f"CT에 node_id={node_id} 가 없습니다. CT nodes: {[p.get('nodes') for p in ct_payloads]}"
+        result = spy.wait_payload(
+            "_core/sync/connection_table",
+            lambda p: any(n.get("id") == node_id for n in p.get("nodes", [])),
+            timeout=10.0,
+        )
+        assert result is not None, \
+            f"CT에 node_id={node_id} 가 없습니다. 수신된 CT: {spy.payloads('_core/sync/connection_table')}"
     finally:
         pub.loop_stop()
         pub.disconnect()
@@ -95,14 +93,12 @@ def test_backup_receives_ct_from_active(active_core, backup_core, spy):
         publish(pub, f"campus/monitor/status/{node_id}", reg)
 
         # CT가 발행됐는지 확인 (Active → mosquitto retained)
-        assert spy.wait_for("_core/sync/connection_table", timeout=10.0), \
-            "_core/sync/connection_table 이 발행되지 않았습니다"
-
-        ct_payloads = spy.payloads("_core/sync/connection_table")
-        assert any(
-            any(n.get("id") == node_id for n in p.get("nodes", []))
-            for p in ct_payloads
-        ), f"CT에 node_id={node_id} 가 없습니다"
+        result = spy.wait_payload(
+            "_core/sync/connection_table",
+            lambda p: any(n.get("id") == node_id for n in p.get("nodes", [])),
+            timeout=10.0,
+        )
+        assert result is not None, f"CT에 node_id={node_id} 가 없습니다"
     finally:
         pub.loop_stop()
         pub.disconnect()

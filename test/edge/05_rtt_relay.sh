@@ -16,6 +16,11 @@ edge2_log="$TEST_RUN_DIR/edge2.log"
 
 binary="$(edge_binary)"
 
+# 잔류 retained 토픽 클리어 (이전 테스트 실행의 오염된 CT 제거)
+mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -t "campus/monitor/topology" -n -r 2>/dev/null || true
+mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -t "_core/sync/connection_table" -n -r 2>/dev/null || true
+sleep 0.3
+
 start_core "$core_log" >/dev/null
 if ! wait_for_pattern "$core_log" '\[core\] connected' 10; then
   show_file_tail "$core_log"

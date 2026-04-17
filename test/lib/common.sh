@@ -119,6 +119,11 @@ cleanup() {
     wait "$pid" 2>/dev/null || true
   done
 
+  # 이 테스트 프로세스가 등록하지 않은 잔류 broker 프로세스도 정리 (다른 테스트 오염 방지)
+  pkill -x core_broker 2>/dev/null || true
+  pkill -x edge_broker 2>/dev/null || true
+  sleep 0.2
+
   # 테스트가 남긴 retained 메시지 초기화 (다음 테스트 격리 보장)
   sleep 0.3
   local retained_topics=(

@@ -188,6 +188,38 @@ def run_proc(
 
 
 # ──────────────────────────────────────────────
+# retained 메시지 클리어 헬퍼
+# ──────────────────────────────────────────────
+_RETAINED_TOPICS = [
+    "campus/monitor/topology",
+    "_core/sync/connection_table",
+]
+
+
+def _clear_retained(host: str = MQTT_HOST, port: int = MQTT_PORT) -> None:
+    """retained 메시지를 빈 페이로드로 덮어써서 삭제한다."""
+    c = mqtt.Client(
+        client_id=f"cleanup-{uuid.uuid4().hex[:8]}",
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+    )
+    c.connect(host, port, keepalive=10)
+    c.loop_start()
+    for topic in _RETAINED_TOPICS:
+        c.publish(topic, payload=None, qos=1, retain=True)
+    time.sleep(0.3)
+    c.loop_stop()
+    c.disconnect()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def clear_retained_before_session():
+    """테스트 세션 시작 전에 오래된 retained 메시지를 클리어한다."""
+    _clear_retained()
+    yield
+    _clear_retained()
+
+
+# ──────────────────────────────────────────────
 # pytest 픽스처
 # ──────────────────────────────────────────────
 @pytest.fixture
@@ -205,7 +237,8 @@ def log_dir(tmp_path):
 
 @pytest.fixture
 def active_core(tmp_path):
-    """Active Core 기동 픽스처. core_id 반환."""
+    """Active Core 기동 픽스처. 시작 전 retained CT 클리어로 stale 버전 충돌 방지."""
+    _clear_retained()
     log = tmp_path / "core_active.log"
     with run_proc(
         CORE_BINARY, MQTT_HOST, str(MQTT_PORT),
@@ -214,6 +247,7 @@ def active_core(tmp_path):
         log_path=log,
     ) as proc:
         yield proc, log
+    _clear_retained()
 
 
 @pytest.fixture

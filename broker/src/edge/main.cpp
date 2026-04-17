@@ -233,6 +233,15 @@ static bool forward_message_upstream(EdgeContext* ctx, const char* topic, const 
             return true;
     }
 
+    // 직접 경로가 모두 실패하면 Relay Node를 통해 전달 (FR-08)
+    if (ctx->relay_node_id[0] != '\0' && ctx->mosq_core)
+    {
+        char relay_topic[128];
+        std::snprintf(relay_topic, sizeof(relay_topic), "campus/relay/%s", ctx->relay_node_id);
+        if (publish_to_upstream(ctx->mosq_core, "relay node", relay_topic, msg))
+            return true;
+    }
+
     return false;
 }
 
@@ -377,6 +386,7 @@ static void on_connect_core(struct mosquitto* mosq, void* userdata, int rc)
     }
 
     ctx->core_connected = true;
+    ctx->last_ct_version = 0;  // (재)연결 시 CT 버전 리셋 — 새 Core의 v1부터 수신 가능
     std::printf("[edge] connected to core\n");
     ctx->prefer_backup = false;
     std::printf("[edge] core is primary again\n");
@@ -385,11 +395,14 @@ static void on_connect_core(struct mosquitto* mosq, void* userdata, int rc)
     std::snprintf(ping_topic, sizeof(ping_topic), "%s%s", TOPIC_PING_PREFIX, ctx->edge_id);
     char pong_topic[128];
     std::snprintf(pong_topic, sizeof(pong_topic), "%s%s", TOPIC_PONG_PREFIX, ctx->edge_id);
+    char relay_topic[128];
+    std::snprintf(relay_topic, sizeof(relay_topic), "campus/relay/%s", ctx->edge_id);
     mosquitto_subscribe(mosq, nullptr, TOPIC_TOPOLOGY, 1);
     mosquitto_subscribe(mosq, nullptr, TOPIC_CORE_WILL_ALL, 1);
     mosquitto_subscribe(mosq, nullptr, "campus/alert/core_switch", 1);
     mosquitto_subscribe(mosq, nullptr, ping_topic, 0);
     mosquitto_subscribe(mosq, nullptr, pong_topic, 0);  // Pong 수신: RTT 측정용 (FR-08)
+    mosquitto_subscribe(mosq, nullptr, relay_topic, 1);  // Relay 수신: 인접 노드의 중계 요청 (FR-08)
 
     publish_edge_status(mosq, ctx, "core");
 
@@ -433,15 +446,24 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
 
                 if (prev_active != ct.active_core_id)
                 {
-                    auto new_core = ctx->ct_manager->findNode(ct.active_core_id);
-                    if (new_core && new_core->ip[0] != '\0'
-                        && (std::strcmp(new_core->ip, ctx->active_core_ip) != 0
-                            || new_core->port != ctx->active_core_port))
+                    // 새 active core의 IP:Port는 로컬 CT에 없을 수 있으므로 수신된 CT에서 직접 탐색
+                    const NodeEntry* new_core_entry = nullptr;
+                    for (int j = 0; j < ct.node_count; j++)
+                    {
+                        if (std::strncmp(ct.nodes[j].id, ct.active_core_id, UUID_LEN) == 0)
+                        {
+                            new_core_entry = &ct.nodes[j];
+                            break;
+                        }
+                    }
+                    if (new_core_entry && new_core_entry->ip[0] != '\0'
+                        && (std::strcmp(new_core_entry->ip, ctx->active_core_ip) != 0
+                            || new_core_entry->port != ctx->active_core_port))
                     {
                         std::printf("[edge] active_core_id changed → reconnect to %s:%d\n",
-                            new_core->ip, new_core->port);
-                        std::strncpy(ctx->active_core_ip, new_core->ip, IP_LEN - 1);
-                        ctx->active_core_port = new_core->port;
+                            new_core_entry->ip, new_core_entry->port);
+                        std::strncpy(ctx->active_core_ip, new_core_entry->ip, IP_LEN - 1);
+                        ctx->active_core_port = new_core_entry->port;
                         mosquitto_disconnect(ctx->mosq_core);
                         mosquitto_connect_async(ctx->mosq_core,
                             ctx->active_core_ip, ctx->active_core_port, 60);
@@ -481,6 +503,8 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
             return;
         }
 
+        std::printf("[edge] core_switch: new active core at %s:%d\n", new_ip, new_port);
+
         // 이미 해당 Core에 연결 중이면 무시
         if (std::strcmp(new_ip, ctx->active_core_ip) == 0
             && new_port == ctx->active_core_port)
@@ -513,6 +537,28 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
         }
 
         return;
+    }
+
+    // Relay 수신 → Core로 전달 (FR-08): 인접 Edge가 campus/relay/<edge_id> 로 중계 요청
+    {
+        char relay_prefix[128];
+        std::snprintf(relay_prefix, sizeof(relay_prefix), "campus/relay/%s", ctx->edge_id);
+        if (std::strcmp(msg->topic, relay_prefix) == 0)
+        {
+            // 수신한 메시지를 그대로 campus/data/ 로 재발행 → Core가 처리
+            char fwd_topic[128];
+            MqttMessage relayed = {};
+            std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+            if (mqtt_message_from_json(json, relayed))
+            {
+                std::snprintf(fwd_topic, sizeof(fwd_topic), "campus/data/%s", relayed.source.id);
+                std::string fwd_json = mqtt_message_to_json(relayed);
+                mosquitto_publish(mosq, nullptr, fwd_topic,
+                    (int)fwd_json.size(), fwd_json.c_str(), 1, false);
+                std::printf("[edge] relay forwarded: %s → %s\n", msg->topic, fwd_topic);
+            }
+            return;
+        }
     }
 
     // Pong 수신 → RTT 계산 + LinkEntry 갱신 + Relay Node 선택 (FR-08, M-02)

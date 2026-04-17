@@ -521,6 +521,9 @@ typedef struct {
 | Pong 수신 → RTT 계산 → `ct_manager.addLink()` RTT 갱신 | FR-08, M-02 |
 | `select_relay_node()` — RTT 최소 + `hop_to_core` 최소 기준 `relay_node_id` 갱신 | FR-08, 5.6 |
 | `campus/monitor/pong/<edge_id>` 구독 추가 (RTT 측정 수신용) | FR-08 |
+| `campus/relay/<edge_id>` 구독 추가 → 수신 시 `campus/data/<source_id>`로 재발행 (인접 Edge 중계 요청 처리) | FR-08, R-01 |
+| `forward_message_upstream()` relay fallback — 직접 경로 실패 시 `campus/relay/<relay_node_id>` 발행 | FR-08, R-01 |
+| `on_connect_core()` 재연결 시 `last_ct_version = 0` 리셋 → 새 Core의 v1부터 수신 가능 | FR-01, FR-09 |
 
 #### Web Client
 
@@ -641,6 +644,15 @@ paho-mqtt 2.x + pytest 기반 통합 테스트. 실제 바이너리(`core_broker
 | `active_core` / `backup_core` / `edge` fixtures | 각 바이너리 기동·정리 자동화 |
 | `make_event()` / `make_status_msg()` | 이벤트·STATUS 메시지 dict 생성 헬퍼 |
 | `wait_log()` | 로그 파일에서 regex 패턴 대기 |
+| `_clear_retained()` / `clear_retained_before_session` | 테스트 세션 전후 retained 메시지(`campus/monitor/topology`, `_core/sync/connection_table`) 초기화 — 잔류 CT로 인한 version 충돌 방지 |
+| `active_core` fixture retained 클리어 | `active_core` 픽스처 setup/teardown 시 retained 클리어 → stale CT 버전 오염 방지 |
+
+공통 인프라 (`test/lib/common.sh`):
+
+| 구성요소 | 역할 |
+| -------- | ---- |
+| `cleanup()` — `pkill -x core_broker / edge_broker` | 등록되지 않은 잔류 broker 프로세스도 강제 종료 — 이전 테스트의 ghost 프로세스가 stale CT를 재발행하는 문제 방지 |
+| `cleanup()` — retained 메시지 초기화 | 종료 시 `campus/monitor/topology`, `_core/sync/connection_table` retained 클리어 |
 
 ### 14.5 Phase 3 구현 완료 (2026-04-17)
 
