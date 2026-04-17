@@ -17,6 +17,7 @@
 #include "mqtt_json.h"
 #include "message.h"
 #include "uuid.h"
+#include "core_helpers.h"
 
 // Global State =====================================================
 static volatile bool g_running = true;
@@ -51,6 +52,10 @@ struct EdgeContext
     std::mutex flush_mutex;
 
     int last_ct_version = 0;  // 마지막 수신한 CT 버전 (구버전 무시용)
+
+    // 현재 연결 중인 Active Core 주소 (core_switch 재연결 판단용)
+    char active_core_ip[IP_LEN];
+    int  active_core_port;
 };
 
 static void handle_signal(int) { g_running = false; }
@@ -392,6 +397,7 @@ static void on_connect_core(struct mosquitto* mosq, void* userdata, int rc)
     std::snprintf(ping_topic, sizeof(ping_topic), "%s%s", TOPIC_PING_PREFIX, ctx->edge_id);
     mosquitto_subscribe(mosq, nullptr, TOPIC_TOPOLOGY, 1);
     mosquitto_subscribe(mosq, nullptr, TOPIC_CORE_WILL_ALL, 1);
+    mosquitto_subscribe(mosq, nullptr, "campus/alert/core_switch", 1);
     mosquitto_subscribe(mosq, nullptr, ping_topic, 0);
 
     publish_edge_status(mosq, ctx, "core");
@@ -414,7 +420,7 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
 {
     auto* ctx = static_cast<EdgeContext*>(userdata);
 
-    // CT 수신 (M-04): 로컬 CT 갱신
+    // CT 수신 (M-04): 로컬 CT 갱신 + active_core_id 변경 감지
     if (std::strcmp(msg->topic, TOPIC_TOPOLOGY) == 0)
     {
         ConnectionTable ct;
@@ -427,8 +433,32 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
                     ct.version, ctx->last_ct_version);
                 return;
             }
+
+            // active_core_id 변경 감지 → 새 Active Core로 재연결
             if (ct.active_core_id[0] != '\0')
+            {
+                std::string prev_active = ctx->ct_manager->snapshot().active_core_id;
                 ctx->ct_manager->setActiveCoreId(ct.active_core_id);
+
+                if (prev_active != ct.active_core_id)
+                {
+                    auto new_core = ctx->ct_manager->findNode(ct.active_core_id);
+                    if (new_core && new_core->ip[0] != '\0'
+                        && (std::strcmp(new_core->ip, ctx->active_core_ip) != 0
+                            || new_core->port != ctx->active_core_port))
+                    {
+                        std::printf("[edge] active_core_id changed → reconnect to %s:%d\n",
+                            new_core->ip, new_core->port);
+                        std::strncpy(ctx->active_core_ip, new_core->ip, IP_LEN - 1);
+                        ctx->active_core_port = new_core->port;
+                        mosquitto_disconnect(ctx->mosq_core);
+                        mosquitto_connect_async(ctx->mosq_core,
+                            ctx->active_core_ip, ctx->active_core_port, 60);
+                        ctx->prefer_backup = false;
+                    }
+                }
+            }
+
             for (int i = 0; i < ct.node_count; i++)
             {
                 if (!ctx->ct_manager->addNode(ct.nodes[i]))
@@ -439,6 +469,37 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
             ctx->last_ct_version = ct.version;
             std::printf("[edge] CT applied (version=%d, nodes=%d)\n", ct.version, ct.node_count);
         }
+        return;
+    }
+
+    // campus/alert/core_switch 수신: 새 Active Core로 명시적 재연결 (FR-05, FR-10)
+    if (std::strcmp(msg->topic, "campus/alert/core_switch") == 0)
+    {
+        MqttMessage sw = {};
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+        if (!mqtt_message_from_json(json, sw))
+            return;
+
+        char new_ip[IP_LEN] = {};
+        int  new_port = 0;
+        if (!parse_ip_port(sw.payload.description, new_ip, sizeof(new_ip), &new_port))
+        {
+            std::fprintf(stderr, "[edge] core_switch: invalid payload '%s'\n",
+                sw.payload.description);
+            return;
+        }
+
+        // 이미 해당 Core에 연결 중이면 무시
+        if (std::strcmp(new_ip, ctx->active_core_ip) == 0
+            && new_port == ctx->active_core_port)
+            return;
+
+        std::printf("[edge] core_switch: reconnecting to %s:%d\n", new_ip, new_port);
+        std::strncpy(ctx->active_core_ip, new_ip, IP_LEN - 1);
+        ctx->active_core_port = new_port;
+        mosquitto_disconnect(ctx->mosq_core);
+        mosquitto_connect_async(ctx->mosq_core, ctx->active_core_ip, ctx->active_core_port, 60);
+        ctx->prefer_backup = false;
         return;
     }
 
@@ -628,6 +689,8 @@ int main(int argc, char* argv[])
     ctx.core_connected = false;
     ctx.backup_connected = false;
     ctx.prefer_backup = false;
+    std::strncpy(ctx.active_core_ip, core_ip, IP_LEN - 1);
+    ctx.active_core_port = core_port;
 
     // 2. core 방향 outbound IP 자동 감지
     if (!get_outbound_ip(core_ip, core_port, ctx.node_ip, sizeof(ctx.node_ip)))

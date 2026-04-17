@@ -38,6 +38,8 @@ Usage: ./test/test_pub.sh <case>
 [edge] edge_broker 동작 검증 (BUILD_DIR 또는 EDGE_BINARY 필요):
   edge_ping_pong
   edge_lwt
+  edge_core_switch
+  edge_ct_active_core_change
 
 [전체 실행]:
   all_client      client/smoke + client/edge-cases 전체
@@ -82,6 +84,8 @@ core/election
 core/election_distributed
 edge/ping_pong
 edge/lwt
+edge/core_switch
+edge/ct_active_core_change
 EOF
 }
 
@@ -129,8 +133,10 @@ run_all_core() {
 }
 
 run_all_edge() {
-  try_run_binary_test "$SCRIPT_DIR/edge/01_ping_pong.sh" "edge/01_ping_pong"
-  try_run_binary_test "$SCRIPT_DIR/edge/02_lwt.sh"       "edge/02_lwt"
+  try_run_binary_test "$SCRIPT_DIR/edge/01_ping_pong.sh"              "edge/01_ping_pong"
+  try_run_binary_test "$SCRIPT_DIR/edge/02_lwt.sh"                    "edge/02_lwt"
+  try_run_binary_test "$SCRIPT_DIR/edge/03_core_switch.sh"            "edge/03_core_switch"
+  try_run_binary_test "$SCRIPT_DIR/edge/04_ct_active_core_change.sh"  "edge/04_ct_active_core_change"
   printf '[test] all_edge completed\n'
 }
 
@@ -161,8 +167,10 @@ case "${1:-help}" in
   core_election)              exec "$SCRIPT_DIR/core/08_election.sh" ;;
   core_election_distributed)  exec "$SCRIPT_DIR/core/09_election_distributed.sh" ;;
   # edge
-  edge_ping_pong)     exec "$SCRIPT_DIR/edge/01_ping_pong.sh" ;;
-  edge_lwt)           exec "$SCRIPT_DIR/edge/02_lwt.sh" ;;
+  edge_ping_pong)              exec "$SCRIPT_DIR/edge/01_ping_pong.sh" ;;
+  edge_lwt)                    exec "$SCRIPT_DIR/edge/02_lwt.sh" ;;
+  edge_core_switch)            exec "$SCRIPT_DIR/edge/03_core_switch.sh" ;;
+  edge_ct_active_core_change)  exec "$SCRIPT_DIR/edge/04_ct_active_core_change.sh" ;;
   # 전체 실행
   all_client)         run_all_client ;;
   all_core)           run_all_core ;;
