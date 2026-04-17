@@ -22,10 +22,10 @@ struct CoreContext {
     bool                            is_backup;
     char                            active_core_ip[IP_LEN]; // Backup only: peer IP
     int                             active_core_port;        // Backup only: peer port
-    ConnectionTableManager*         ct_manager;
+    ConnectionTableManager* ct_manager;
     std::unordered_set<std::string> seen_msg_ids;
-    struct mosquitto*               mosq_self;  // own broker connection
-    struct mosquitto*               mosq_peer;  // Backup → Active's broker
+    struct mosquitto* mosq_self;  // own broker connection
+    struct mosquitto* mosq_peer;  // Backup → Active's broker
 
     // Election state (FR-10)
     int  election_votes;               // 자신을 지지하는 투표 수
@@ -69,7 +69,8 @@ static void on_ct_changed(struct mosquitto* mosq, CoreContext* ctx) {
     publish_topology(mosq, ctx);
     if (!ctx->is_backup) {
         publish_ct_sync(mosq, ctx);
-    } else {
+    }
+    else {
         publish_node_register(ctx);
     }
 }
@@ -166,7 +167,8 @@ static void on_message(struct mosquitto* mosq, void* userdata,
                 (int)ct_json.size(), ct_json.c_str(), 1, false);
 
             printf("[core] node recovered: %s  (ct.version=%d)\n", reg.source.id, ct.version);
-        } else if (!existing) {
+        }
+        else if (!existing) {
             ctx->ct_manager->addNode(node);
             on_ct_changed(mosq, ctx);
             printf("[core] edge registered: %s  %s:%d\n", node.id, node_ip, node_port);
@@ -440,8 +442,8 @@ int main(int argc, char* argv[]) {
     }
     const char* broker_host = argv[1];
     int         broker_port = atoi(argv[2]);
-    bool        is_backup   = (argc >= 5);
-    const char* active_core_ip   = is_backup ? argv[3] : "";
+    bool        is_backup = (argc >= 5);
+    const char* active_core_ip = is_backup ? argv[3] : "";
     int         active_core_port = is_backup ? atoi(argv[4]) : 0;
 
     setvbuf(stdout, nullptr, _IOLBF, 0);  // 테스트 스크립트가 로그를 실시간 grep할 수 있도록 line-buffered 설정
@@ -452,8 +454,8 @@ int main(int argc, char* argv[]) {
     CoreContext ctx = {};
     uuid_generate(ctx.core_id);
     strncpy(ctx.core_ip, broker_host, IP_LEN - 1);
-    ctx.core_port   = broker_port;
-    ctx.is_backup   = is_backup;
+    ctx.core_port = broker_port;
+    ctx.is_backup = is_backup;
     if (is_backup) {
         strncpy(ctx.active_core_ip, active_core_ip, IP_LEN - 1);
         ctx.active_core_port = active_core_port;
@@ -466,7 +468,8 @@ int main(int argc, char* argv[]) {
     ConnectionTableManager ct_manager;
     if (is_backup) {
         ct_manager.init("", ctx.core_id);   // active_core_id 미확정, self = backup
-    } else {
+    }
+    else {
         ct_manager.init(ctx.core_id, "");   // self = active
     }
     ctx.ct_manager = &ct_manager;
@@ -536,7 +539,8 @@ int main(int argc, char* argv[]) {
         mosq_peer = mosquitto_new(peer_id, true, &ctx);
         if (!mosq_peer) {
             fprintf(stderr, "[core/backup] mosquitto_new (peer) failed\n");
-        } else {
+        }
+        else {
             ctx.mosq_peer = mosq_peer;
             mosquitto_connect_callback_set(mosq_peer, on_connect_peer);
             mosquitto_message_callback_set(mosq_peer, on_message_peer);
@@ -544,11 +548,12 @@ int main(int argc, char* argv[]) {
             mosquitto_reconnect_delay_set(mosq_peer, 2, 30, false);
 
             if (mosquitto_connect(mosq_peer, active_core_ip, active_core_port, 60)
-                    == MOSQ_ERR_SUCCESS) {
+                == MOSQ_ERR_SUCCESS) {
                 mosquitto_loop_start(mosq_peer);
                 printf("[core/backup] peer connected to active %s:%d\n",
                     active_core_ip, active_core_port);
-            } else {
+            }
+            else {
                 fprintf(stderr, "[core/backup] peer connect failed — retry scheduled\n");
                 mosquitto_loop_start(mosq_peer);  // auto-reconnect loop 시작
             }
