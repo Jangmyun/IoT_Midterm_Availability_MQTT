@@ -24,7 +24,10 @@ function sortNodes(nodes) {
 }
 
 export default function App() {
-  const { status, topology, events, alerts, reconnectInfo } = useMqtt();
+  const { status, topology, events, alerts, reconnectInfo, brokerUrl, setBrokerUrl } = useMqtt();
+
+  // 브로커 주소 입력 state
+  const [urlInput, setUrlInput] = useState(brokerUrl);
 
   // 노드 선택 state
   const [selectedNodeId, setSelectedNodeId] = useState(null);
@@ -59,6 +62,19 @@ export default function App() {
       <header className="monitor-header">
         <h1>Smart Campus Monitor</h1>
         <span className={`status status--${status}`}>{status}</span>
+        <form
+          className="broker-url-form"
+          onSubmit={e => { e.preventDefault(); setBrokerUrl(urlInput.trim()); }}
+        >
+          <input
+            className="broker-url-input"
+            value={urlInput}
+            onChange={e => setUrlInput(e.target.value)}
+            placeholder="ws://localhost:9001"
+            spellCheck={false}
+          />
+          <button className="broker-url-btn" type="submit">Connect</button>
+        </form>
         {topology && (
           <span className="core-info">
             Active: <code title={topology.active_core_id}>{topology.active_core_id.slice(0, 8)}…</code>
@@ -87,7 +103,10 @@ export default function App() {
           {alerts.map((a, i) => (
             <div key={i} className={`alert-item alert-item--${a.topic.includes('node_down') ? 'down' : a.topic.includes('node_up') ? 'up' : 'core'}`}>
               <strong>{a.topic}</strong>
-              {a.msg && <span> — {a.msg.type}{a.msg.payload?.description ? `: ${a.msg.payload.description}` : ''}</span>}
+              {/* node_down / node_up: CT 페이로드 → nodeId + CT version 표시 */}
+              {a.nodeId && <span> — node: {a.nodeId.slice(0, 8)}…{a.ct ? ` (ct.v${a.ct.version})` : ''}</span>}
+              {/* core_switch / will/core: MqttMessage 페이로드 */}
+              {!a.nodeId && a.msg && <span> — {a.msg.type}{a.msg.payload?.description ? `: ${a.msg.payload.description}` : ''}</span>}
             </div>
           ))}
         </div>

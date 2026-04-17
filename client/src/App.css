@@ -40,6 +40,43 @@ body {
   color: #666;
 }
 
+/* ── 브로커 주소 입력 폼 ─────────────────────── */
+.broker-url-form {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.broker-url-input {
+  background: #1a1a2e;
+  border: 1px solid #2a2a3a;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 4px 8px;
+  width: 200px;
+}
+
+.broker-url-input:focus {
+  outline: none;
+  border-color: #6366f1;
+}
+
+.broker-url-btn {
+  background: #6366f1;
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 12px;
+}
+
+.broker-url-btn:hover {
+  background: #4f52d4;
+}
+
 /* ── 연결 상태 배지 ──────────────────────────── */
 .status {
   font-size: 11px;
@@ -151,6 +188,8 @@ body {
   background: #0d0d1a;
   border: 1px solid #2a2a3a;
   border-radius: 6px;
+  overflow: hidden;
+  position: relative;
 }
 
 /* ── 노드 상세 패널 ──────────────────────────── */

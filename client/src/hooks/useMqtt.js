@@ -25,10 +25,12 @@ export function useMqtt() {
   const [alerts, setAlerts]             = useState([]);
   const [reconnectInfo, setReconnectInfo] = useState(null); // { url, reason } | null
 
-  const clientRef    = useRef(null);
-  const seenMsgIds   = useRef(new Set());
+  const clientRef      = useRef(null);
+  const seenMsgIds     = useRef(new Set());
+  // node_down/node_up 알림 중복 제거용: "topic:ct.version" 형태 키
+  const seenAlertKeys  = useRef(new Set());
   // topology를 ref로도 보관 — message 핸들러가 클로저 내에서 최신값을 참조해야 함
-  const topologyRef  = useRef(null);
+  const topologyRef    = useRef(null);
 
   useEffect(() => {
     const client = mqtt.connect(brokerUrl, {
@@ -80,10 +82,24 @@ export function useMqtt() {
       }
 
       // ── A-01 / A-02: Node 상태 알림 ────────────────────────────────
+      // core/main.cpp 는 node_down 토픽에 ConnectionTable JSON을 publish함
       if (topic.startsWith('campus/alert/node_down/') ||
           topic.startsWith('campus/alert/node_up/')) {
-        const parsed = parseMqttMessage(raw);
-        const alert = { topic, msg: parsed, raw, ts: Date.now() };
+        const ct = parseConnectionTable(raw);
+        // CT 버전 기반 중복 제거 (QoS 1 재전달 대응)
+        const alertKey = `${topic}:${ct?.version ?? raw.slice(0, 32)}`;
+        if (seenAlertKeys.current.has(alertKey)) return;
+        seenAlertKeys.current.add(alertKey);
+        // CT가 있으면 topology도 버전 가드 후 갱신
+        if (ct) {
+          setTopology(prev => {
+            if (prev && ct.version <= prev.version) return prev;
+            topologyRef.current = ct;
+            return ct;
+          });
+        }
+        const nodeId = topic.split('/').pop();
+        const alert = { topic, nodeId, ct, raw, ts: Date.now() };
         setAlerts(prev => [alert, ...prev].slice(0, MAX_ALERTS));
         // ALERT_TTL_MS 후 자동 제거
         setTimeout(() => {
@@ -94,7 +110,13 @@ export function useMqtt() {
 
       // ── A-03: Active Core 교체 알림 → backup Core로 재연결 ──────────
       if (topic === 'campus/alert/core_switch') {
-        const alert = { topic, msg: parseMqttMessage(raw), raw, ts: Date.now() };
+        const parsed = parseMqttMessage(raw);
+        // msg_id 기반 중복 제거 (QoS 1 재전달 대응)
+        if (parsed) {
+          if (seenMsgIds.current.has(parsed.msg_id)) return;
+          seenMsgIds.current.add(parsed.msg_id);
+        }
+        const alert = { topic, msg: parsed, raw, ts: Date.now() };
         setAlerts(prev => [alert, ...prev].slice(0, MAX_ALERTS));
         setTimeout(() => {
           setAlerts(prev => prev.filter(a => a.ts !== alert.ts));
@@ -105,7 +127,13 @@ export function useMqtt() {
 
       // ── W-01: Core LWT (비정상 종료) → backup Core로 재연결 ─────────
       if (topic.startsWith('campus/will/core/')) {
-        const alert = { topic, msg: parseMqttMessage(raw), raw, ts: Date.now() };
+        const parsed = parseMqttMessage(raw);
+        // msg_id 기반 중복 제거 (QoS 1 재전달 대응)
+        if (parsed) {
+          if (seenMsgIds.current.has(parsed.msg_id)) return;
+          seenMsgIds.current.add(parsed.msg_id);
+        }
+        const alert = { topic, msg: parsed, raw, ts: Date.now() };
         setAlerts(prev => [alert, ...prev].slice(0, MAX_ALERTS));
         setTimeout(() => {
           setAlerts(prev => prev.filter(a => a.ts !== alert.ts));
@@ -142,5 +170,5 @@ export function useMqtt() {
     setBrokerUrl(newUrl); // state 변경 → useEffect 재실행 → 재연결
   }
 
-  return { status, topology, events, alerts, reconnectInfo };
+  return { status, topology, events, alerts, reconnectInfo, brokerUrl, setBrokerUrl };
 }
