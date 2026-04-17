@@ -67,6 +67,8 @@ ask_install() {
 }
 
 # ── 패키지 설치 함수 ──────────────────────────────────────────────────────────
+declare -A INSTALLED_PKGS=()
+
 install_pkg_macos() {
   local brew_pkg="$1"
   info "brew install $brew_pkg ..."
@@ -94,12 +96,24 @@ install_pkg_rhel() {
 
 install_pkg() {
   local desc="$1" macos_pkg="$2" linux_pkg="$3"
+  local pkg
+  case "$PLATFORM" in
+    macos) pkg="$macos_pkg" ;;
+    *)     pkg="$linux_pkg" ;;
+  esac
+
+  if [[ -n "${INSTALLED_PKGS[$pkg]+x}" ]]; then
+    ok "$desc (패키지 '$pkg' 이미 설치됨)"
+    return
+  fi
+
   case "$PLATFORM" in
     macos)  install_pkg_macos   "$macos_pkg" ;;
     debian) install_pkg_debian  "$linux_pkg" ;;
     fedora) install_pkg_fedora  "$linux_pkg" ;;
     rhel)   install_pkg_rhel    "$linux_pkg" ;;
   esac
+  INSTALLED_PKGS[$pkg]=1
   ok "$desc 설치 완료"
 }
 
