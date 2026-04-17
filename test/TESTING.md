@@ -22,14 +22,14 @@
 
 ### 필수 도구
 
-| 도구 | 용도 | 설치 |
-|------|------|------|
-| `mosquitto` | MQTT 브로커 | `brew install mosquitto` / `apt install mosquitto` |
-| `mosquitto_pub` / `mosquitto_sub` | CLI 퍼블리셔·구독자 | mosquitto 패키지에 포함 |
-| `cmake` ≥ 3.20 | C/C++ 빌드 | `brew install cmake` / `apt install cmake` |
-| `python3` ≥ 3.10 | pytest 실행 | 시스템 또는 pyenv |
-| `paho-mqtt` 2.x | Python MQTT 클라이언트 | `pip install paho-mqtt` |
-| `pytest` ≥ 7 | Python 테스트 프레임워크 | `pip install pytest` |
+| 도구                              | 용도                     | 설치                                               |
+| --------------------------------- | ------------------------ | -------------------------------------------------- |
+| `mosquitto`                       | MQTT 브로커              | `brew install mosquitto` / `apt install mosquitto` |
+| `mosquitto_pub` / `mosquitto_sub` | CLI 퍼블리셔·구독자      | mosquitto 패키지에 포함                            |
+| `cmake` ≥ 3.20                    | C/C++ 빌드               | `brew install cmake` / `apt install cmake`         |
+| `python3` ≥ 3.10                  | pytest 실행              | 시스템 또는 pyenv                                  |
+| `paho-mqtt` 2.x                   | Python MQTT 클라이언트   | `pip install paho-mqtt`                            |
+| `pytest` ≥ 7                      | Python 테스트 프레임워크 | `pip install pytest`                               |
 
 ### mosquitto 기동 확인
 
@@ -45,6 +45,7 @@ lsof -i :1883
 
 > **주의**: 인증 없이 127.0.0.1:1883 에 익명 접속이 허용돼야 한다.
 > `/etc/mosquitto/mosquitto.conf` 또는 `~/.mosquitto.conf` 에 아래를 추가:
+>
 > ```
 > allow_anonymous true
 > listener 1883 127.0.0.1
@@ -70,18 +71,18 @@ ls broker/build/core_broker broker/build/edge_broker
 
 ## 3. 공통 환경 변수
 
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| `MQTT_HOST` | `127.0.0.1` | mosquitto 브로커 IP |
-| `MQTT_PORT` | `1883` | mosquitto 브로커 포트 |
-| `MQTT_USERNAME` | (없음) | 브로커 인증 사용자명 |
-| `MQTT_PASSWORD` | (없음) | 브로커 인증 비밀번호 |
-| `BUILD_DIR` | `broker/build` | 바이너리 디렉토리 |
-| `CORE_BINARY` | `$BUILD_DIR/core_broker` | Core 바이너리 절대 경로 (오버라이드용) |
-| `EDGE_BINARY` | `$BUILD_DIR/edge_broker` | Edge 바이너리 절대 경로 (오버라이드용) |
-| `CORE_A_IP` | `127.0.0.1` | Core A IP (client smoke용) |
-| `CORE_B_IP` | `127.0.0.2` | Core B IP (client smoke용) |
-| `NODE_1_IP` | `10.0.0.3` | Node 1 IP (client smoke용) |
+| 변수            | 기본값                   | 설명                                   |
+| --------------- | ------------------------ | -------------------------------------- |
+| `MQTT_HOST`     | `127.0.0.1`              | mosquitto 브로커 IP                    |
+| `MQTT_PORT`     | `1883`                   | mosquitto 브로커 포트                  |
+| `MQTT_USERNAME` | (없음)                   | 브로커 인증 사용자명                   |
+| `MQTT_PASSWORD` | (없음)                   | 브로커 인증 비밀번호                   |
+| `BUILD_DIR`     | `broker/build`           | 바이너리 디렉토리                      |
+| `CORE_BINARY`   | `$BUILD_DIR/core_broker` | Core 바이너리 절대 경로 (오버라이드용) |
+| `EDGE_BINARY`   | `$BUILD_DIR/edge_broker` | Edge 바이너리 절대 경로 (오버라이드용) |
+| `CORE_A_IP`     | `127.0.0.1`              | Core A IP (client smoke용)             |
+| `CORE_B_IP`     | `127.0.0.2`              | Core B IP (client smoke용)             |
+| `NODE_1_IP`     | `10.0.0.3`               | Node 1 IP (client smoke용)             |
 
 ---
 
@@ -91,12 +92,12 @@ ls broker/build/core_broker broker/build/edge_broker
 
 `test/test_pub.sh` 는 세 가지 테스트 범주를 제공한다:
 
-| 범주 | 대상 | 전제 조건 |
-|------|------|-----------|
-| `client/smoke` | 웹 클라이언트 렌더링 | mosquitto만 필요 |
-| `client/edge-cases` | 클라이언트 파싱·방어 로직 | mosquitto만 필요 |
-| `core/` | core_broker 동작 | 빌드된 `core_broker` 필요 |
-| `edge/` | edge_broker 동작 | 빌드된 `core_broker`, `edge_broker` 필요 |
+| 범주                | 대상                      | 전제 조건                                |
+| ------------------- | ------------------------- | ---------------------------------------- |
+| `client/smoke`      | 웹 클라이언트 렌더링      | mosquitto만 필요                         |
+| `client/edge-cases` | 클라이언트 파싱·방어 로직 | mosquitto만 필요                         |
+| `core/`             | core_broker 동작          | 빌드된 `core_broker` 필요                |
+| `edge/`             | edge_broker 동작          | 빌드된 `core_broker`, `edge_broker` 필요 |
 
 ### 사용법
 
@@ -198,13 +199,13 @@ python3 -m pytest test/integration/ -v -s
 
 ### 테스트 파일 구성
 
-| 파일 | 시나리오 | 검증 항목 |
-|------|----------|-----------|
-| `test_01_e2e.py` | 이벤트 종단간 전달 | Publisher → Core 재발행 → Spy 수신, 필드 보존 |
-| `test_02_failover.py` | Core 페일오버 | Active SIGKILL → core_switch 발행, Edge 재연결 |
-| `test_03_node_lifecycle.py` | Node 장애·복구 | LWT → node_down(OFFLINE), 재등록 → node_up(ONLINE) |
-| `test_04_dedup.py` | 이벤트 중복 방지 | 동일 msg_id 2회 → 1회만 재발행 |
-| `test_05_ct_sync.py` | CT 동기화 | 노드 등록 후 CT 갱신·발행, Backup 수신 |
+| 파일                        | 시나리오           | 검증 항목                                          |
+| --------------------------- | ------------------ | -------------------------------------------------- |
+| `test_01_e2e.py`            | 이벤트 종단간 전달 | Publisher → Core 재발행 → Spy 수신, 필드 보존      |
+| `test_02_failover.py`       | Core 페일오버      | Active SIGKILL → core_switch 발행, Edge 재연결     |
+| `test_03_node_lifecycle.py` | Node 장애·복구     | LWT → node_down(OFFLINE), 재등록 → node_up(ONLINE) |
+| `test_04_dedup.py`          | 이벤트 중복 방지   | 동일 msg_id 2회 → 1회만 재발행                     |
+| `test_05_ct_sync.py`        | CT 동기화          | 노드 등록 후 CT 갱신·발행, Backup 수신             |
 
 ### 전제 조건
 
@@ -223,6 +224,7 @@ pytest 통합 테스트 실행 전:
 ### 6.1 Core + Edge 기동 및 등록 확인
 
 **터미널 A** — 구독자 (모니터):
+
 ```bash
 mosquitto_sub -h 127.0.0.1 -p 1883 -v \
   -t "campus/monitor/topology" \
@@ -231,16 +233,19 @@ mosquitto_sub -h 127.0.0.1 -p 1883 -v \
 ```
 
 **터미널 B** — Active Core 기동:
+
 ```bash
 ./broker/build/core_broker 127.0.0.1 1883
 ```
 
 **터미널 C** — Edge 기동:
+
 ```bash
 ./broker/build/edge_broker 127.0.0.1 1883 127.0.0.1 1883
 ```
 
 **확인 사항**:
+
 - 터미널 B 로그: `[core] <uuid> (ACTIVE) running`
 - 터미널 C 로그: `[edge] registered: <uuid>`
 - 터미널 A: `campus/monitor/topology` 메시지 수신, `campus/monitor/status/<edge-id>` 수신
@@ -250,6 +255,7 @@ mosquitto_sub -h 127.0.0.1 -p 1883 -v \
 ### 6.2 Core 페일오버 (Active → Backup 전환)
 
 **터미널 A** — 구독자:
+
 ```bash
 mosquitto_sub -h 127.0.0.1 -p 1883 -v \
   -t "campus/will/core/#" \
@@ -257,28 +263,33 @@ mosquitto_sub -h 127.0.0.1 -p 1883 -v \
 ```
 
 **터미널 B** — Active Core:
+
 ```bash
 ./broker/build/core_broker 127.0.0.1 1883
 # 기동 후 PID 기록
 ```
 
 **터미널 C** — Backup Core:
+
 ```bash
 ./broker/build/core_broker 127.0.0.1 1883 127.0.0.1 1883
 ```
 
 **터미널 D** — Edge:
+
 ```bash
 ./broker/build/edge_broker 127.0.0.1 1883 127.0.0.1 1883
 ```
 
 **페일오버 트리거**:
+
 ```bash
 # Active Core 강제 종료 (SIGKILL — LWT 트리거)
 kill -9 <active_core_pid>
 ```
 
 **확인 사항**:
+
 - 터미널 A: `campus/will/core/<active-id>` 수신 (LWT)
 - 터미널 A: `campus/alert/core_switch` 수신, payload.description에 Backup IP:Port 포함
 - 터미널 C (Backup) 로그: `[core] ... (ACTIVE) running` (역할 전환)
@@ -289,6 +300,7 @@ kill -9 <active_core_pid>
 ### 6.3 Node 장애 감지 및 복구
 
 **터미널 A** — 구독자:
+
 ```bash
 mosquitto_sub -h 127.0.0.1 -p 1883 -v \
   -t "campus/alert/node_down/#" \
@@ -297,6 +309,7 @@ mosquitto_sub -h 127.0.0.1 -p 1883 -v \
 ```
 
 **터미널 B** — Core 기동 후 Node 등록:
+
 ```bash
 ./broker/build/core_broker 127.0.0.1 1883
 
@@ -317,6 +330,7 @@ mosquitto_pub -h 127.0.0.1 -p 1883 \
 ```
 
 **LWT 시뮬레이션** (노드 강제 종료 흉내):
+
 ```bash
 mosquitto_pub -h 127.0.0.1 -p 1883 \
   -t "campus/will/node/$NODE_ID" -q 1 \
@@ -333,10 +347,12 @@ mosquitto_pub -h 127.0.0.1 -p 1883 \
 ```
 
 **확인 사항**:
+
 - `campus/alert/node_down/<NODE_ID>` 수신, payload에 `OFFLINE` 포함
 - `campus/monitor/topology` 재발행 (Node 상태 갱신)
 
 **복구 시뮬레이션** — 동일한 STATUS 메시지를 `campus/monitor/status/$NODE_ID` 에 재발행:
+
 - `campus/alert/node_up/<NODE_ID>` 수신, payload에 `ONLINE` 포함
 
 ---
@@ -344,6 +360,7 @@ mosquitto_pub -h 127.0.0.1 -p 1883 \
 ### 6.4 이벤트 중복 방지 확인
 
 **구독자 + Core 기동 후**:
+
 ```bash
 MSG_ID=$(uuidgen | tr A-Z a-z)
 PAYLOAD='{
@@ -365,6 +382,7 @@ mosquitto_pub -h 127.0.0.1 -p 1883 -t "campus/data/INTRUSION" -q 1 -m "$PAYLOAD"
 ```
 
 **확인 사항**:
+
 - Core 로그에서 `event forwarded: campus/data/INTRUSION` 가 정확히 **1회** 출력
 - 구독자에서 `campus/data/INTRUSION` 메시지 수신 (원본 1회 + 재발행 1회 = 2회, 단 3회 이상이면 dedup 미작동)
 
@@ -379,6 +397,7 @@ mosquitto_sub -h 127.0.0.1 -p 1883 -v \
 ```
 
 Core + Edge 기동 후:
+
 - 즉시 CT 수신 (version=1, edge 등록 전)
 - Edge 등록 완료 후 CT 재수신 (version=2, nodes 배열에 edge 포함)
 
@@ -390,12 +409,12 @@ Core + Edge 기동 후:
 
 ### 환경 예시
 
-| 역할 | 호스트 | 포트 |
-|------|--------|------|
+| 역할                    | 호스트          | 포트 |
+| ----------------------- | --------------- | ---- |
 | mosquitto (공유 브로커) | `192.168.1.100` | 1883 |
-| Active Core | `192.168.1.101` | — |
-| Backup Core | `192.168.1.102` | — |
-| Edge | `192.168.1.103` | — |
+| Active Core             | `192.168.1.101` | —    |
+| Backup Core             | `192.168.1.102` | —    |
+| Edge                    | `192.168.1.103` | —    |
 
 ### 기동 순서
 
@@ -469,6 +488,7 @@ CORE_BINARY=$(pwd)/broker/build/core_broker ./test/test_pub.sh core_bootstrap
 ### Core가 ACTIVE로 뜨지 않음
 
 Core 두 번째 인수(MQTT_PORT) 확인. mosquitto가 해당 포트에서 수신 중인지 확인:
+
 ```bash
 ./broker/build/core_broker 127.0.0.1 1883
 # 로그에서 확인:
@@ -486,6 +506,7 @@ python3 -m pytest test/integration/ -v
 ### Backup Core가 peer 연결 안 됨
 
 Backup Core 기동 인수의 4번째·5번째가 Active Core의 mosquitto 주소와 일치하는지 확인:
+
 ```bash
 # OK: 같은 mosquitto를 가리킴
 ./core_broker 127.0.0.1 1883  127.0.0.1 1883
@@ -504,18 +525,18 @@ mosquitto_pub -h 127.0.0.1 -p 1883 -t "_core/sync/connection_table" -n -r
 
 ## 빠른 참조: 주요 토픽
 
-| 토픽 | 방향 | 설명 |
-|------|------|------|
-| `campus/data/#` | Node→Core→Client | CCTV 이벤트 (INTRUSION, MOTION, DOOR_FORCED) |
-| `campus/monitor/topology` | Core→All (retained) | 전체 CT 스냅샷 |
-| `campus/monitor/status/<id>` | Node→Core | 노드 등록 / 상태 업데이트 |
-| `campus/monitor/ping/<id>` | Core→Edge | Ping 요청 |
-| `campus/monitor/pong/<id>` | Edge→Core | Ping 응답 |
-| `campus/alert/node_down/<id>` | Core→All | 노드 장애 알림 (OFFLINE) |
-| `campus/alert/node_up/<id>` | Core→All | 노드 복구 알림 (ONLINE) |
-| `campus/alert/core_switch` | Backup→All | Core 전환 알림 (새 Active IP:Port) |
-| `campus/will/core/<id>` | mosquitto LWT | Core 비정상 종료 감지 |
-| `campus/will/node/<id>` | mosquitto LWT | Node 비정상 종료 감지 |
-| `_core/sync/connection_table` | Active→Backup (retained) | CT 동기화 |
-| `_core/election/request` | Core→Core | Election 요청 |
-| `_core/election/result` | Core→Core | Election 결과(투표) |
+| 토픽                          | 방향                     | 설명                                         |
+| ----------------------------- | ------------------------ | -------------------------------------------- |
+| `campus/data/#`               | Node→Core→Client         | CCTV 이벤트 (INTRUSION, MOTION, DOOR_FORCED) |
+| `campus/monitor/topology`     | Core→All (retained)      | 전체 CT 스냅샷                               |
+| `campus/monitor/status/<id>`  | Node→Core                | 노드 등록 / 상태 업데이트                    |
+| `campus/monitor/ping/<id>`    | Core→Edge                | Ping 요청                                    |
+| `campus/monitor/pong/<id>`    | Edge→Core                | Ping 응답                                    |
+| `campus/alert/node_down/<id>` | Core→All                 | 노드 장애 알림 (OFFLINE)                     |
+| `campus/alert/node_up/<id>`   | Core→All                 | 노드 복구 알림 (ONLINE)                      |
+| `campus/alert/core_switch`    | Backup→All               | Core 전환 알림 (새 Active IP:Port)           |
+| `campus/will/core/<id>`       | mosquitto LWT            | Core 비정상 종료 감지                        |
+| `campus/will/node/<id>`       | mosquitto LWT            | Node 비정상 종료 감지                        |
+| `_core/sync/connection_table` | Active→Backup (retained) | CT 동기화                                    |
+| `_core/election/request`      | Core→Core                | Election 요청                                |
+| `_core/election/result`       | Core→Core                | Election 결과(투표)                          |
