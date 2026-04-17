@@ -494,6 +494,9 @@ typedef struct {
 | CT 수신 시 version 비교 → 구버전 무시 (`on_message`, `on_message_peer`) | FR-01 |
 | Node 복구(OFFLINE→ONLINE) 감지 → `campus/alert/node_up/<id>` 발행 | FR-13, A-02 |
 | Core Election — `_core/election/request` 투표, `_core/election/result` 집계 → ACTIVE 전환 | FR-10, C-03, C-04 |
+| Core Election 분산 환경 지원 — `on_connect_peer()`에서 `_core/election/#` 구독, peer 채널 투표·결과 핸들러 | FR-10, C-03, C-04 |
+| Election voter 중복 방지 (`election_voters` unordered_set) | FR-10 |
+| Election 성공(ACTIVE 전환) 시 peer 브로커에 `campus/alert/core_switch` 발행 → Edge 수신 가능 | FR-10, FR-14, A-03 |
 
 #### Edge Broker (`broker/src/edge/main.cpp`)
 
@@ -510,6 +513,8 @@ typedef struct {
 | flush_store_queue() — Core 재연결 / Backup 연결 시 큐 재전송 | FR-07 |
 | forward_message_upstream() — core_connected / backup_connected / prefer_backup 기반 failover 라우팅 | FR-05, FR-07 |
 | on_connect_backup — Backup Core 등록 + 큐 flush | FR-05 |
+| `campus/alert/core_switch` 수신 → `parse_ip_port` → `mosq_core` 재연결 (`active_core_ip/port` 갱신) | FR-05, A-03 |
+| CT 수신 시 `active_core_id` 변경 감지 → `findNode` → 새 IP:Port로 `mosq_core` 재연결 | FR-05, FR-10 |
 
 #### Web Client
 
@@ -525,19 +530,10 @@ typedef struct {
 
 ### 14.2 미완료 항목
 
-#### Core Broker
-
-| 구성요소 | 관련 FR | 비고 |
-| -------- | ------- | ---- |
-| Election 분산 환경 지원 — `on_connect_peer()`에서 `_core/election/#` 추가 구독 | FR-10 | 현재 Election은 단일 브로커 한정 동작 (하단 설계 제약 참고) |
-| Election 성공 시 peer 브로커(Edge 연결 브로커)에 `campus/alert/core_switch` 발행 | FR-10, FR-14 | 현재 자신의 브로커에만 topology 발행 — Edge가 수신 불가 |
-
 #### Edge Broker
 
 | 구성요소 | 관련 FR | 비고 |
 | -------- | ------- | ---- |
-| `campus/alert/core_switch` 수신 → 명시적 Backup Core 재연결 | FR-05 | 현재는 LWT 기반으로만 failover |
-| CT 수신 후 `active_core_id` 변경 감지 → 새 Active Core로 명시적 재연결 | FR-05, FR-10 | 현재 CT 적용 후 재연결 로직 없음 |
 | CT 수신 후 인접 Node에 Ping 발송 (RTT 측정 시작) | FR-08 | Phase 3 |
 | Pong 수신 → RTT 계산 + LinkEntry 갱신 | FR-08 | Phase 3 |
 | RTT + hop_to_core 기반 최적 Relay Node 선택 | FR-08 | Phase 3 |
@@ -551,42 +547,15 @@ typedef struct {
 
 ---
 
-### 14.2.1 설계 제약 — Election과 Edge 재연결
+### 14.2.1 설계 제약 — 해소된 제약 현황
 
-#### Election의 단일 브로커 한계
+Phase 5+/6 구현으로 이전 설계 제약이 모두 해소되었다.
 
-현재 Election 메커니즘은 `on_message()` (자신 브로커 수신)에만 구현되어 있어, **두 Core가 서로 다른 mosquitto 인스턴스를 운영하는 분산 환경에서는 동작하지 않는다.**
-
-```
-실제 분산 환경 (브로커 2개):
-
-  Core A 브로커  ←── Edge들 연결됨
-      ↑
-  Core B (mosq_peer)  ←── TOPIC_CT_SYNC + TOPIC_CORE_WILL_ALL 만 구독
-                           _core/election/# 는 구독 안 함
-      ↓
-  Core B 브로커  ←── Core B 자체 운영
-
-  → Core A 브로커에 _core/election/request 발행해도 Core B는 수신 불가
-```
-
-**테스트(08_election.sh)가 통과되는 이유**: Core A·B가 동일한 mosquitto 인스턴스를 공유하기 때문.
-
-**수정 방향**:
-1. `on_connect_peer()`에서 `TOPIC_ELECTION_ALL` 추가 구독
-2. Election 성공(ACTIVE 전환) 시 `mosq_peer`(Edge들이 연결된 브로커)에도 `campus/alert/core_switch` 발행
-
-#### Election 후 Edge 재연결 부재
-
-Election으로 Core B가 ACTIVE가 되어도, Edge는 새 Active Core의 IP:Port를 알 수 없다.
-
-| 조건 | Edge가 새 Active Core IP:Port를 아는가? |
+| 조건 | Edge가 새 Active Core로 재연결하는가? |
 |---|---|
-| 단일 브로커 테스트 환경 | ✅ topology 수신, CT의 NodeEntry에 IP:Port 포함 |
-| 실제 2-브로커 환경 (Election 경유) | ❌ election 미전달 + topology가 Core B 브로커에만 발행됨 |
-| 실제 2-브로커 환경 (Active SIGKILL → LWT 경유) | ✅ `campus/alert/core_switch` payload에 `ip:port` 명시, Edge가 `prefer_backup` 전환 |
-
-**결론**: 현재 구현에서 실제 분산 환경의 Core 전환은 **LWT → `core_switch` 경로만 올바르게 동작**한다. Election은 단일 브로커 시나리오 전용이며, 실제 분산 환경 지원을 위해서는 위 수정 방향 적용이 필요하다.
+| Active SIGKILL → LWT → `core_switch` | ✅ `core_switch` 수신 → `parse_ip_port` → `mosq_core` 재연결 |
+| Election → `core_switch` (peer 브로커 발행) | ✅ 동일 — peer 브로커에 발행된 `core_switch` 수신 → 재연결 |
+| CT 수신 → `active_core_id` 변경 | ✅ `findNode` → 새 IP:Port로 `mosq_core` 재연결 |
 
 ---
 
@@ -598,9 +567,11 @@ Election으로 Core B가 ACTIVE가 되어도, Edge는 새 Active Core의 IP:Port
 | **2** | Core 장애 대응 + Store-and-Forward | FR-04, FR-05, FR-07, FR-14 | ✅ 완료 |
 | **3** | RTT 측정 + Relay 경로 선택 | FR-08 | ⬜ 미착수 |
 | **4** | Web Client 이벤트 로그 + 토폴로지 그래프 | FR-11, FR-12 | ✅ 완료 |
-| **5** | Core 미완료 항목 (CT version 비교, Node 복구, Election) | FR-01, FR-10, FR-13 | ✅ 완료 |
+| **5**  | Core 미완료 항목 (CT version 비교, Node 복구, Election) | FR-01, FR-10, FR-13 | ✅ 완료 |
+| **5+** | Core Election 분산 환경 지원 (peer 채널 핸들러, voter 중복 방지, peer core_switch) | FR-10, FR-14 | ✅ 완료 |
+| **6**  | Edge 재연결 (`core_switch` 수신 → 새 Active Core 재연결, CT `active_core_id` 변경 감지) | FR-05, FR-10 | ✅ 완료 |
 
-### 14.4 Phase 5 구현 완료 항목 (2026-04-17)
+### 14.4 Phase 5 / 5+ / 6 구현 완료 항목 (2026-04-17)
 
 #### Core Broker
 
@@ -617,12 +588,38 @@ Election으로 Core B가 ACTIVE가 되어도, Edge는 새 Active Core의 IP:Port
 | -------- | ------- | --------- |
 | CT 수신 후 version 비교 → 구버전 무시, 최신 CT를 `ct_manager`에 반영 | FR-01, FR-09 | `broker/src/edge/main.cpp` |
 
-#### 시나리오 테스트
+#### 시나리오 테스트 — Phase 5
 
 | 스크립트 | 검증 내용 |
 | -------- | --------- |
 | `test/core/07_node_recovery.sh` | Node LWT → OFFLINE → M-03 재발행 → `campus/alert/node_up` 수신 확인 |
 | `test/core/08_election.sh` | `_core/election/request` 발행 → `_core/election/result` 수신 → topology 갱신 확인 |
+| `test/core/09_election_distributed.sh` | Active+Backup 2-core — Backup이 election 후 ACTIVE 전환, peer 브로커에 `campus/alert/core_switch` 발행 확인 |
+
+#### Core Broker — Phase 5+ (분산 Election)
+
+| 구성요소 | 관련 FR | 구현 위치 |
+| -------- | ------- | --------- |
+| `on_connect_peer()`에서 `TOPIC_ELECTION_ALL` 구독 추가 | FR-10 | `broker/src/core/main.cpp` |
+| `on_message_peer()` election_request 핸들러 — peer 브로커에서 요청 수신 후 투표 발행 | FR-10, C-03 | `broker/src/core/main.cpp` |
+| `on_message_peer()` election_result 핸들러 — voter 중복 방지 + 과반 시 ACTIVE 전환 + peer 브로커에 `core_switch` 발행 | FR-10, C-04, FR-14 | `broker/src/core/main.cpp` |
+| `election_voters` unordered_set — own/peer 채널 중복 집계 방지 | FR-10 | `broker/src/core/main.cpp` |
+
+#### Edge Broker — Phase 6 (재연결)
+
+| 구성요소 | 관련 FR | 구현 위치 |
+| -------- | ------- | --------- |
+| `EdgeContext`에 `active_core_ip/port` 필드 추가 (현재 연결 Core 주소 추적) | FR-05 | `broker/src/edge/main.cpp` |
+| `on_connect_core()`: `campus/alert/core_switch` 구독 추가 | FR-05 | `broker/src/edge/main.cpp` |
+| `on_message_core()`: `core_switch` 수신 → `parse_ip_port` → `mosq_core` 재연결 | FR-05, A-03 | `broker/src/edge/main.cpp` |
+| `on_message_core()`: CT 수신 시 `active_core_id` 변경 감지 → `findNode` → 새 IP:Port로 재연결 | FR-05, FR-10 | `broker/src/edge/main.cpp` |
+
+#### 시나리오 테스트 — Phase 6
+
+| 스크립트 | 검증 내용 |
+| -------- | --------- |
+| `test/edge/03_core_switch.sh` | `campus/alert/core_switch` 수신 → Edge 재연결 시도 로그 확인 |
+| `test/edge/04_ct_active_core_change.sh` | CT v1→v2 `active_core_id` 변경 감지 후 재연결 시도 확인 |
 
 ### 14.5 Phase 3 구현 계획
 
