@@ -632,6 +632,7 @@ paho-mqtt 2.x + pytest 기반 통합 테스트. 실제 바이너리(`core_broker
 | `test_03_node_lifecycle.py` | Node 장애·복구 | LWT 시뮬 → `campus/alert/node_down` OFFLINE 수신, 재등록 → `campus/alert/node_up` ONLINE 수신 | FR-06, FR-13 |
 | `test_04_dedup.py` | 이벤트 중복 방지 | 동일 `msg_id` 2회 발행 → Core 로그 `event forwarded` 1회, 다른 `msg_id` → 각각 재발행 | FR-02 |
 | `test_05_ct_sync.py` | CT 동기화 | 노드 등록 후 `_core/sync/connection_table` 갱신·발행, CT에 node_id 포함, version 증가, Backup 수신 확인 | FR-01, C-01 |
+| `test_06_rtt_relay.py` | RTT 측정·Relay 선택 | Core+Edge×2 기동 → CT 수신 후 Ping 발송, Pong 수신 RTT 계산, relay node 선택, OFFLINE node 후보 제외 확인 | FR-08 |
 
 공통 인프라 (`test/integration/conftest.py`):
 
@@ -643,13 +644,17 @@ paho-mqtt 2.x + pytest 기반 통합 테스트. 실제 바이너리(`core_broker
 | `make_event()` / `make_status_msg()` | 이벤트·STATUS 메시지 dict 생성 헬퍼 |
 | `wait_log()` | 로그 파일에서 regex 패턴 대기 |
 
-### 14.5 Phase 3 구현 계획
+### 14.5 Phase 3 구현 완료 (2026-04-17)
 
-| 항목 | 위치 | 내용 |
-| ---- | ---- | ---- |
-| Ping 발송 트리거 | `edge/main.cpp` on_message_core (CT 수신 시) | CT의 nodes 순회 → 자신과 다른 NODE 역할 노드에 Ping 발송 |
-| RTT 측정 | `edge/main.cpp` on_message_core (Pong 수신 시) | 발송 시각 기록 → Pong 수신 시각 차이 계산 → ct_manager.updateLinkRtt() |
-| Relay 경로 선택 | 별도 헬퍼 함수 | CT 스냅샷에서 NODE_STATUS_ONLINE 노드 필터 → RTT 최소 선택, RTT 동점 시 hop_to_core 최소 선택 |
+| 구성요소 | 위치 | 내용 |
+| -------- | ---- | ---- |
+| `edge_helpers.h` | `broker/include/` | `infer_msg_type`, `infer_priority`, `parse_building_camera`, `select_relay_node` 순수 로직 헬퍼 (mosquitto 의존 없음) |
+| Ping 발송 트리거 | `edge/main.cpp` on_message_core (CT 수신 후) | CT의 ONLINE NODE 순회 → Ping 발송 + 발송 시각 기록 (`ping_send_times`) |
+| RTT 측정 | `edge/main.cpp` on_message_core (Pong 수신 시) | 발송 시각 차이 계산 → `ct_manager.addLink()` RTT 갱신 |
+| Relay 경로 선택 | `select_relay_node()` (`edge_helpers.h`) | RTT 최소 선택, RTT 동점 시 `hop_to_core` 최소 선택, `relay_node_id` 갱신 |
+| 단위 테스트 | `broker/test/test_edge_logic.cpp` | TC-01~TC-08 (32 assertions) — CMake `test_edge_logic` 타겟 등록 |
+| 통합 테스트 | `test/integration/test_06_rtt_relay.py` | TC-01~TC-04 — Ping 발송·RTT 계산·Relay 선택·OFFLINE 제외 end-to-end 검증 |
+| 쉘 테스트 | `test/edge/05_rtt_relay.sh` | 2-Edge 환경에서 RTT 측정·Relay 선택 로그 패턴 확인 |
 
 ---
 

@@ -235,7 +235,7 @@ def edge(tmp_path, active_core):
     log = tmp_path / "edge.log"
     with run_proc(
         EDGE_BINARY, MQTT_HOST, str(MQTT_PORT), MQTT_HOST, str(MQTT_PORT),
-        startup_log_pattern=r"\[edge\] registered:",
+        startup_log_pattern=r"\[edge\] registered to",
         startup_timeout=10.0,
         log_path=log,
     ) as proc:
