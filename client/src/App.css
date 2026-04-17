@@ -192,6 +192,11 @@ body {
   position: relative;
 }
 
+.topology-graph canvas {
+  left: 0 !important;
+  top: 0 !important;
+}
+
 /* ── 노드 상세 패널 ──────────────────────────── */
 .node-detail {
   margin-top: 8px;

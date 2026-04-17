@@ -79,7 +79,7 @@ export default function App() {
           <span className="core-info">
             Active: <code title={topology.active_core_id}>{topology.active_core_id.slice(0, 8)}…</code>
             &nbsp;|&nbsp;
-            Backup: <code title={topology.backup_core_id}>{topology.backup_core_id.slice(0, 8)}…</code>
+            Backup: <code title={topology.backup_core_id || 'none'}>{topology.backup_core_id ? topology.backup_core_id.slice(0, 8) + '…' : '(none)'}</code>
             &nbsp;|&nbsp;v{topology.version}
             &nbsp;|&nbsp;{topology.last_update}
           </span>
