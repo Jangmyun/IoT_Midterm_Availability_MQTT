@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMqtt } from './hooks/useMqtt.js';
 import TopologyGraph from './components/TopologyGraph.jsx';
 import './App.css';
@@ -28,6 +28,10 @@ export default function App() {
 
   // 브로커 주소 입력 state
   const [urlInput, setUrlInput] = useState(brokerUrl);
+
+  useEffect(() => {
+    setUrlInput(brokerUrl);
+  }, [brokerUrl]);
 
   // 노드 선택 state
   const [selectedNodeId, setSelectedNodeId] = useState(null);

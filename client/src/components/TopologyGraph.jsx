@@ -184,7 +184,7 @@ export default function TopologyGraph({ topology, onNodeClick }) {
       if (!nodeIdSet.has(fromId) || !nodeIdSet.has(toId)) continue;
 
       const rttValue =
-        typeof l.rtt_ms === 'number' && Number.isFinite(l.rtt_ms)
+        typeof l.rtt_ms === 'number' && Number.isFinite(l.rtt_ms) && l.rtt_ms > 0
           ? `${Math.round(l.rtt_ms)}ms`
           : '';
 
