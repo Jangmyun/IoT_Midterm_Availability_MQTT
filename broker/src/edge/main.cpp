@@ -6,8 +6,8 @@
 #include <string>
 #include <deque>
 #include <mutex>
-#include <algorithm>
-#include <cctype>
+#include <chrono>
+#include <unordered_map>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -18,12 +18,10 @@
 #include "message.h"
 #include "uuid.h"
 #include "core_helpers.h"
+#include "edge_helpers.h"
 
 // Global State =====================================================
 static volatile bool g_running = true;
-
-// message.h에는 TOPIC_DATA_ALL만 있으므로 edge 쪽 prefix 비교용으로 따로 둠
-static const char* TOPIC_DATA_PREFIX = "campus/data/";
 
 struct QueuedEvent
 {
@@ -56,6 +54,13 @@ struct EdgeContext
     // 현재 연결 중인 Active Core 주소 (core_switch 재연결 판단용)
     char active_core_ip[IP_LEN];
     int  active_core_port;
+
+    // RTT 측정: target_node_id → ping 발송 시각 (FR-08)
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> ping_send_times;
+    std::mutex ping_mutex;
+
+    // 현재 선택된 최적 Relay Node UUID (없으면 빈 문자열) (FR-08)
+    char relay_node_id[UUID_LEN];
 };
 
 static void handle_signal(int) { g_running = false; }
@@ -100,66 +105,6 @@ static void set_now_utc(char* out, size_t len)
     std::strftime(out, len, "%Y-%m-%dT%H:%M:%SZ", utc);
 }
 
-static std::string to_lower_copy(const std::string& s)
-{
-    std::string x = s;
-    std::transform(x.begin(), x.end(), x.begin(),
-        [](unsigned char c)
-        { return (char)std::tolower(c); });
-    return x;
-}
-
-static MsgType infer_msg_type(const char* topic, const std::string& payload)
-{
-    std::string t = to_lower_copy(topic ? topic : "");
-    std::string p = to_lower_copy(payload);
-
-    if (t.find("intrusion") != std::string::npos || p.find("intrusion") != std::string::npos)
-        return MSG_TYPE_INTRUSION;
-
-    if (t.find("door") != std::string::npos || p.find("door") != std::string::npos)
-        return MSG_TYPE_DOOR_FORCED;
-
-    return MSG_TYPE_MOTION;
-}
-
-static MsgPriority infer_priority(MsgType type)
-{
-    if (type == MSG_TYPE_INTRUSION || type == MSG_TYPE_DOOR_FORCED)
-        return PRIORITY_HIGH;
-    if (type == MSG_TYPE_MOTION)
-        return PRIORITY_MEDIUM;
-    return PRIORITY_NONE;
-}
-
-static void parse_building_camera(const char* topic, char* building, size_t building_len,
-    char* camera, size_t camera_len)
-{
-    if (building_len > 0)
-        building[0] = '\0';
-    if (camera_len > 0)
-        camera[0] = '\0';
-
-    if (!topic)
-        return;
-
-    size_t prefix_len = std::strlen(TOPIC_DATA_PREFIX);
-    if (std::strncmp(topic, TOPIC_DATA_PREFIX, prefix_len) != 0)
-        return;
-
-    const char* rest = topic + prefix_len;
-    const char* slash = std::strchr(rest, '/');
-
-    if (!slash)
-    {
-        std::snprintf(building, building_len, "%s", rest);
-        return;
-    }
-
-    size_t building_part_len = (size_t)(slash - rest);
-    std::snprintf(building, building_len, "%.*s", (int)building_part_len, rest);
-    std::snprintf(camera, camera_len, "%s", slash + 1);
-}
 
 // core / backup 공통 등록 함수
 static void publish_edge_status(struct mosquitto* mosq, EdgeContext* ctx, const char* label)
@@ -375,6 +320,49 @@ static void handle_local_event_delivery(EdgeContext* ctx, const char* topic, con
     queue_event(ctx, topic, event_msg);
 }
 
+// CT 수신 후 ONLINE NODE에 Ping 발송 → RTT 측정 시작 (FR-08)
+static void send_pings_to_nodes(EdgeContext* ctx)
+{
+    if (!ctx->mosq_core || !ctx->core_connected)
+        return;
+
+    ConnectionTable ct = ctx->ct_manager->snapshot();
+    auto now = std::chrono::steady_clock::now();
+
+    for (int i = 0; i < ct.node_count; i++)
+    {
+        const NodeEntry& n = ct.nodes[i];
+        if (n.role != NODE_ROLE_NODE)              continue;
+        if (n.status != NODE_STATUS_ONLINE)        continue;
+        if (std::strncmp(n.id, ctx->edge_id, UUID_LEN) == 0) continue;  // 자신 제외
+
+        {
+            std::lock_guard<std::mutex> lock(ctx->ping_mutex);
+            ctx->ping_send_times[n.id] = now;
+        }
+
+        MqttMessage ping = {};
+        uuid_generate(ping.msg_id);
+        ping.type = MSG_TYPE_PING_REQUEST;
+        ping.source.role = NODE_ROLE_NODE;
+        std::strncpy(ping.source.id, ctx->edge_id, UUID_LEN - 1);
+        ping.source.id[UUID_LEN - 1] = '\0';
+        ping.target.role = NODE_ROLE_NODE;
+        std::strncpy(ping.target.id, n.id, UUID_LEN - 1);
+        ping.target.id[UUID_LEN - 1] = '\0';
+        ping.delivery = { 0, false, false };
+
+        char topic[128];
+        std::snprintf(topic, sizeof(topic), "%s%s", TOPIC_PING_PREFIX, n.id);
+
+        std::string json = mqtt_message_to_json(ping);
+        mosquitto_publish(ctx->mosq_core, nullptr, topic,
+            (int)json.size(), json.c_str(), 0, false);
+
+        std::printf("[edge] ping sent to %s\n", n.id);
+    }
+}
+
 // Callbacks =====================================================
 
 static void on_connect_core(struct mosquitto* mosq, void* userdata, int rc)
@@ -395,10 +383,13 @@ static void on_connect_core(struct mosquitto* mosq, void* userdata, int rc)
     // 구독
     char ping_topic[128];
     std::snprintf(ping_topic, sizeof(ping_topic), "%s%s", TOPIC_PING_PREFIX, ctx->edge_id);
+    char pong_topic[128];
+    std::snprintf(pong_topic, sizeof(pong_topic), "%s%s", TOPIC_PONG_PREFIX, ctx->edge_id);
     mosquitto_subscribe(mosq, nullptr, TOPIC_TOPOLOGY, 1);
     mosquitto_subscribe(mosq, nullptr, TOPIC_CORE_WILL_ALL, 1);
     mosquitto_subscribe(mosq, nullptr, "campus/alert/core_switch", 1);
     mosquitto_subscribe(mosq, nullptr, ping_topic, 0);
+    mosquitto_subscribe(mosq, nullptr, pong_topic, 0);  // Pong 수신: RTT 측정용 (FR-08)
 
     publish_edge_status(mosq, ctx, "core");
 
@@ -468,6 +459,7 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
                 ctx->ct_manager->addLink(ct.links[i]);
             ctx->last_ct_version = ct.version;
             std::printf("[edge] CT applied (version=%d, nodes=%d)\n", ct.version, ct.node_count);
+            send_pings_to_nodes(ctx);  // RTT 측정 시작 (FR-08)
         }
         return;
     }
@@ -523,6 +515,47 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
         return;
     }
 
+    // Pong 수신 → RTT 계산 + LinkEntry 갱신 + Relay Node 선택 (FR-08, M-02)
+    if (std::strncmp(msg->topic, TOPIC_PONG_PREFIX, std::strlen(TOPIC_PONG_PREFIX)) == 0)
+    {
+        MqttMessage pong;
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+        if (!mqtt_message_from_json(json, pong))
+            return;
+
+        // 자신에게 온 pong인지 확인
+        if (std::strncmp(pong.target.id, ctx->edge_id, UUID_LEN) != 0)
+            return;
+
+        auto recv_time = std::chrono::steady_clock::now();
+        float rtt_ms = 0.0f;
+        {
+            std::lock_guard<std::mutex> lock(ctx->ping_mutex);
+            auto it = ctx->ping_send_times.find(pong.source.id);
+            if (it == ctx->ping_send_times.end())
+                return;
+            rtt_ms = std::chrono::duration<float, std::milli>(recv_time - it->second).count();
+            ctx->ping_send_times.erase(it);
+        }
+
+        std::printf("[edge] pong from %s: RTT=%.2fms\n", pong.source.id, rtt_ms);
+
+        LinkEntry link = {};
+        std::strncpy(link.from_id, ctx->edge_id, UUID_LEN - 1);
+        std::strncpy(link.to_id, pong.source.id, UUID_LEN - 1);
+        link.rtt_ms = rtt_ms;
+        ctx->ct_manager->addLink(link);  // 이미 존재하면 RTT 갱신
+
+        std::string best = select_relay_node(*ctx->ct_manager, ctx->edge_id);
+        if (!best.empty())
+        {
+            std::strncpy(ctx->relay_node_id, best.c_str(), UUID_LEN - 1);
+            ctx->relay_node_id[UUID_LEN - 1] = '\0';
+            std::printf("[edge] relay node selected: %s\n", ctx->relay_node_id);
+        }
+        return;
+    }
+
     // Ping 수신 → Pong 응답 (M-01 / M-02)
     if (std::strncmp(msg->topic, TOPIC_PING_PREFIX, std::strlen(TOPIC_PING_PREFIX)) == 0)
     {
@@ -570,7 +603,7 @@ static void on_connect_local(struct mosquitto* mosq, void* userdata, int rc)
     std::printf("[edge] connected to local broker\n");
 
     char topic[128];
-    std::snprintf(topic, sizeof(topic), "%s#", TOPIC_DATA_PREFIX);
+    std::snprintf(topic, sizeof(topic), "%s#", EDGE_DATA_TOPIC_PREFIX);
 
     int sub_rc = mosquitto_subscribe(mosq, nullptr, topic, 0);
     if (sub_rc != MOSQ_ERR_SUCCESS)
@@ -594,7 +627,7 @@ static void on_message_local(struct mosquitto* /*mosq*/, void* userdata,
 {
     auto* ctx = static_cast<EdgeContext*>(userdata);
 
-    if (std::strncmp(msg->topic, TOPIC_DATA_PREFIX, std::strlen(TOPIC_DATA_PREFIX)) != 0)
+    if (std::strncmp(msg->topic, EDGE_DATA_TOPIC_PREFIX, std::strlen(EDGE_DATA_TOPIC_PREFIX)) != 0)
     {
         return;
     }

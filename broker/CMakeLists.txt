@@ -66,3 +66,7 @@ add_test(NAME test_json COMMAND test_json)
 add_executable(test_core_logic test/test_core_logic.cpp)
 target_link_libraries(test_core_logic PRIVATE broker_common)
 add_test(NAME test_core_logic COMMAND test_core_logic)
+
+add_executable(test_edge_logic test/test_edge_logic.cpp)
+target_link_libraries(test_edge_logic PRIVATE broker_common)
+add_test(NAME test_edge_logic COMMAND test_edge_logic)

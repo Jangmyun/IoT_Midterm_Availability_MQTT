@@ -1,0 +1,382 @@
+// test_edge_logic.cpp
+// Edge 헬퍼 함수 단위 테스트: infer_msg_type, infer_priority,
+//                              parse_building_camera, select_relay_node
+//
+// 외부 프레임워크 없음 — 빌드 후 ./build/test_edge_logic 으로 실행
+
+#include <cstdio>
+#include <cstring>
+#include <cmath>
+#include <string>
+#include "edge_helpers.h"
+#include "connection_table_manager.h"
+
+// ── 미니 테스트 러너 ──────────────────────────────────────────────────────────
+
+static int  g_pass = 0;
+static int  g_fail = 0;
+static bool g_test_ok = true;
+
+static void begin_test(const char* name) {
+    g_test_ok = true;
+    printf("[ RUN  ] %s\n", name);
+}
+
+#define CHECK(expr) \
+    do { \
+        if (!(expr)) { \
+            g_fail++; g_test_ok = false; \
+            fprintf(stderr, "        FAIL  %s:%d  (%s)\n", __FILE__, __LINE__, #expr); \
+        } else { \
+            g_pass++; \
+        } \
+    } while (0)
+
+#define CHECK_EQ(a, b)    CHECK((a) == (b))
+#define CHECK_STREQ(a, b) CHECK(std::strcmp((a), (b)) == 0)
+#define CHECK_TRUE(e)     CHECK(e)
+#define CHECK_FALSE(e)    CHECK(!(e))
+
+static void end_test(const char* name) {
+    printf("[  %s ] %s\n\n", g_test_ok ? " OK " : "FAIL", name);
+}
+
+// ── 테스트 상수 ───────────────────────────────────────────────────────────────
+
+#define SELF_ID   "aaaaaaaa-0000-0000-0000-000000000001"
+#define NODE_A    "bbbbbbbb-0000-0000-0000-000000000002"
+#define NODE_B    "cccccccc-0000-0000-0000-000000000003"
+#define NODE_C    "dddddddd-0000-0000-0000-000000000004"
+
+// ── TC-01: infer_msg_type ─────────────────────────────────────────────────────
+
+static void tc_infer_msg_type() {
+    begin_test("TC-01: infer_msg_type — 토픽/페이로드 기반 타입 추론");
+
+    // 토픽에 intrusion 포함 → INTRUSION
+    CHECK_EQ(infer_msg_type("campus/data/INTRUSION", ""), MSG_TYPE_INTRUSION);
+
+    // 페이로드에 intrusion 포함 (대소문자 무관) → INTRUSION
+    CHECK_EQ(infer_msg_type("campus/data/event", "Intrusion detected"), MSG_TYPE_INTRUSION);
+
+    // 토픽에 door 포함 → DOOR_FORCED
+    CHECK_EQ(infer_msg_type("campus/data/DOOR_FORCED", ""), MSG_TYPE_DOOR_FORCED);
+
+    // 페이로드에 door 포함 → DOOR_FORCED
+    CHECK_EQ(infer_msg_type("campus/data/event", "door forced open"), MSG_TYPE_DOOR_FORCED);
+
+    // intrusion 없고 door 없으면 → MOTION
+    CHECK_EQ(infer_msg_type("campus/data/MOTION", ""), MSG_TYPE_MOTION);
+    CHECK_EQ(infer_msg_type("campus/data/event", "object detected"), MSG_TYPE_MOTION);
+
+    // 빈 토픽/페이로드 → MOTION (기본값)
+    CHECK_EQ(infer_msg_type("", ""), MSG_TYPE_MOTION);
+    CHECK_EQ(infer_msg_type(nullptr, ""), MSG_TYPE_MOTION);
+
+    // intrusion이 door보다 우선 (토픽에 둘 다 포함되는 경우는 없지만 함수 순서 확인)
+    CHECK_EQ(infer_msg_type("campus/data/INTRUSION", "door"), MSG_TYPE_INTRUSION);
+
+    end_test("TC-01: infer_msg_type — 토픽/페이로드 기반 타입 추론");
+}
+
+// ── TC-02: infer_priority ─────────────────────────────────────────────────────
+
+static void tc_infer_priority() {
+    begin_test("TC-02: infer_priority — MsgType별 우선순위 매핑");
+
+    CHECK_EQ(infer_priority(MSG_TYPE_INTRUSION),   PRIORITY_HIGH);
+    CHECK_EQ(infer_priority(MSG_TYPE_DOOR_FORCED), PRIORITY_HIGH);
+    CHECK_EQ(infer_priority(MSG_TYPE_MOTION),      PRIORITY_MEDIUM);
+
+    // 나머지 타입은 PRIORITY_NONE
+    CHECK_EQ(infer_priority(MSG_TYPE_STATUS),        PRIORITY_NONE);
+    CHECK_EQ(infer_priority(MSG_TYPE_LWT_CORE),      PRIORITY_NONE);
+    CHECK_EQ(infer_priority(MSG_TYPE_LWT_NODE),      PRIORITY_NONE);
+    CHECK_EQ(infer_priority(MSG_TYPE_PING_REQUEST),  PRIORITY_NONE);
+    CHECK_EQ(infer_priority(MSG_TYPE_PING_RESPONSE), PRIORITY_NONE);
+
+    end_test("TC-02: infer_priority — MsgType별 우선순위 매핑");
+}
+
+// ── TC-03: parse_building_camera ──────────────────────────────────────────────
+
+static void tc_parse_building_camera() {
+    begin_test("TC-03: parse_building_camera — 토픽에서 building/camera 추출");
+
+    char bld[64], cam[64];
+
+    // campus/data/<event>/<building>/<camera> → building + camera 분리
+    parse_building_camera("campus/data/INTRUSION/building-a/cam-01",
+        bld, sizeof(bld), cam, sizeof(cam));
+    CHECK_STREQ(bld, "INTRUSION");
+    CHECK_STREQ(cam, "building-a/cam-01");
+
+    // campus/data/<event> 만 있을 때 → building에 event, camera 빈 문자열
+    memset(bld, 0, sizeof(bld));
+    memset(cam, 0, sizeof(cam));
+    parse_building_camera("campus/data/MOTION",
+        bld, sizeof(bld), cam, sizeof(cam));
+    CHECK_STREQ(bld, "MOTION");
+    CHECK_STREQ(cam, "");
+
+    // prefix 불일치 → 모두 빈 문자열
+    memset(bld, 0, sizeof(bld));
+    memset(cam, 0, sizeof(cam));
+    parse_building_camera("unrelated/topic/data",
+        bld, sizeof(bld), cam, sizeof(cam));
+    CHECK_STREQ(bld, "");
+    CHECK_STREQ(cam, "");
+
+    // nullptr 토픽 → 모두 빈 문자열 (crash 없이)
+    memset(bld, 0, sizeof(bld));
+    memset(cam, 0, sizeof(cam));
+    parse_building_camera(nullptr, bld, sizeof(bld), cam, sizeof(cam));
+    CHECK_STREQ(bld, "");
+    CHECK_STREQ(cam, "");
+
+    end_test("TC-03: parse_building_camera — 토픽에서 building/camera 추출");
+}
+
+// ── TC-04: select_relay_node — RTT 최소 노드 선택 ────────────────────────────
+
+static void tc_select_relay_rtt_min() {
+    begin_test("TC-04: select_relay_node — RTT 최소 노드 선택");
+
+    ConnectionTableManager ct;
+    ct.init("", "");
+
+    // SELF 노드 등록 (자신 — 후보 제외 확인용)
+    NodeEntry self = {};
+    strncpy(self.id, SELF_ID, UUID_LEN - 1);
+    self.role = NODE_ROLE_NODE; self.status = NODE_STATUS_ONLINE; self.hop_to_core = 1;
+    ct.addNode(self);
+
+    // NODE_A: RTT 5ms
+    NodeEntry na = {};
+    strncpy(na.id, NODE_A, UUID_LEN - 1);
+    na.role = NODE_ROLE_NODE; na.status = NODE_STATUS_ONLINE; na.hop_to_core = 2;
+    ct.addNode(na);
+
+    LinkEntry la = {};
+    strncpy(la.from_id, SELF_ID, UUID_LEN - 1);
+    strncpy(la.to_id,   NODE_A,  UUID_LEN - 1);
+    la.rtt_ms = 5.0f;
+    ct.addLink(la);
+
+    // NODE_B: RTT 20ms
+    NodeEntry nb = {};
+    strncpy(nb.id, NODE_B, UUID_LEN - 1);
+    nb.role = NODE_ROLE_NODE; nb.status = NODE_STATUS_ONLINE; nb.hop_to_core = 1;
+    ct.addNode(nb);
+
+    LinkEntry lb = {};
+    strncpy(lb.from_id, SELF_ID, UUID_LEN - 1);
+    strncpy(lb.to_id,   NODE_B,  UUID_LEN - 1);
+    lb.rtt_ms = 20.0f;
+    ct.addLink(lb);
+
+    std::string best = select_relay_node(ct, SELF_ID);
+    CHECK_STREQ(best.c_str(), NODE_A);  // RTT 5 < 20 → NODE_A
+
+    end_test("TC-04: select_relay_node — RTT 최소 노드 선택");
+}
+
+// ── TC-05: select_relay_node — RTT 동점 시 hop_to_core 최소 선택 ─────────────
+
+static void tc_select_relay_hop_tiebreak() {
+    begin_test("TC-05: select_relay_node — RTT 동점 시 hop_to_core 최소");
+
+    ConnectionTableManager ct;
+    ct.init("", "");
+
+    NodeEntry self = {};
+    strncpy(self.id, SELF_ID, UUID_LEN - 1);
+    self.role = NODE_ROLE_NODE; self.status = NODE_STATUS_ONLINE; self.hop_to_core = 1;
+    ct.addNode(self);
+
+    // NODE_A: RTT 10ms, hop 3
+    NodeEntry na = {};
+    strncpy(na.id, NODE_A, UUID_LEN - 1);
+    na.role = NODE_ROLE_NODE; na.status = NODE_STATUS_ONLINE; na.hop_to_core = 3;
+    ct.addNode(na);
+
+    LinkEntry la = {};
+    strncpy(la.from_id, SELF_ID, UUID_LEN - 1);
+    strncpy(la.to_id,   NODE_A,  UUID_LEN - 1);
+    la.rtt_ms = 10.0f;
+    ct.addLink(la);
+
+    // NODE_B: RTT 10ms, hop 1 (동 RTT, 더 가까운 hop)
+    NodeEntry nb = {};
+    strncpy(nb.id, NODE_B, UUID_LEN - 1);
+    nb.role = NODE_ROLE_NODE; nb.status = NODE_STATUS_ONLINE; nb.hop_to_core = 1;
+    ct.addNode(nb);
+
+    LinkEntry lb = {};
+    strncpy(lb.from_id, SELF_ID, UUID_LEN - 1);
+    strncpy(lb.to_id,   NODE_B,  UUID_LEN - 1);
+    lb.rtt_ms = 10.0f;
+    ct.addLink(lb);
+
+    std::string best = select_relay_node(ct, SELF_ID);
+    CHECK_STREQ(best.c_str(), NODE_B);  // RTT 동점 → hop 1 < 3 → NODE_B
+
+    end_test("TC-05: select_relay_node — RTT 동점 시 hop_to_core 최소");
+}
+
+// ── TC-06: select_relay_node — OFFLINE 노드 제외 ─────────────────────────────
+
+static void tc_select_relay_offline_excluded() {
+    begin_test("TC-06: select_relay_node — OFFLINE 노드 제외");
+
+    ConnectionTableManager ct;
+    ct.init("", "");
+
+    NodeEntry self = {};
+    strncpy(self.id, SELF_ID, UUID_LEN - 1);
+    self.role = NODE_ROLE_NODE; self.status = NODE_STATUS_ONLINE; self.hop_to_core = 1;
+    ct.addNode(self);
+
+    // NODE_A: OFFLINE (RTT 있어도 후보 제외)
+    NodeEntry na = {};
+    strncpy(na.id, NODE_A, UUID_LEN - 1);
+    na.role = NODE_ROLE_NODE; na.status = NODE_STATUS_OFFLINE; na.hop_to_core = 1;
+    ct.addNode(na);
+
+    LinkEntry la = {};
+    strncpy(la.from_id, SELF_ID, UUID_LEN - 1);
+    strncpy(la.to_id,   NODE_A,  UUID_LEN - 1);
+    la.rtt_ms = 3.0f;
+    ct.addLink(la);
+
+    // NODE_B: ONLINE, RTT 15ms
+    NodeEntry nb = {};
+    strncpy(nb.id, NODE_B, UUID_LEN - 1);
+    nb.role = NODE_ROLE_NODE; nb.status = NODE_STATUS_ONLINE; nb.hop_to_core = 2;
+    ct.addNode(nb);
+
+    LinkEntry lb = {};
+    strncpy(lb.from_id, SELF_ID, UUID_LEN - 1);
+    strncpy(lb.to_id,   NODE_B,  UUID_LEN - 1);
+    lb.rtt_ms = 15.0f;
+    ct.addLink(lb);
+
+    std::string best = select_relay_node(ct, SELF_ID);
+    CHECK_STREQ(best.c_str(), NODE_B);  // NODE_A는 OFFLINE → NODE_B 선택
+
+    end_test("TC-06: select_relay_node — OFFLINE 노드 제외");
+}
+
+// ── TC-07: select_relay_node — RTT 미측정 노드 제외 ─────────────────────────
+
+static void tc_select_relay_no_rtt_excluded() {
+    begin_test("TC-07: select_relay_node — RTT 미측정 노드 제외");
+
+    ConnectionTableManager ct;
+    ct.init("", "");
+
+    NodeEntry self = {};
+    strncpy(self.id, SELF_ID, UUID_LEN - 1);
+    self.role = NODE_ROLE_NODE; self.status = NODE_STATUS_ONLINE; self.hop_to_core = 1;
+    ct.addNode(self);
+
+    // NODE_A: ONLINE 이지만 링크(RTT) 없음 → 후보 제외
+    NodeEntry na = {};
+    strncpy(na.id, NODE_A, UUID_LEN - 1);
+    na.role = NODE_ROLE_NODE; na.status = NODE_STATUS_ONLINE; na.hop_to_core = 1;
+    ct.addNode(na);
+    // 링크 없음
+
+    // NODE_B: ONLINE, RTT 있음
+    NodeEntry nb = {};
+    strncpy(nb.id, NODE_B, UUID_LEN - 1);
+    nb.role = NODE_ROLE_NODE; nb.status = NODE_STATUS_ONLINE; nb.hop_to_core = 2;
+    ct.addNode(nb);
+
+    LinkEntry lb = {};
+    strncpy(lb.from_id, SELF_ID, UUID_LEN - 1);
+    strncpy(lb.to_id,   NODE_B,  UUID_LEN - 1);
+    lb.rtt_ms = 8.0f;
+    ct.addLink(lb);
+
+    std::string best = select_relay_node(ct, SELF_ID);
+    CHECK_STREQ(best.c_str(), NODE_B);  // NODE_A RTT 없음 → NODE_B
+
+    end_test("TC-07: select_relay_node — RTT 미측정 노드 제외");
+}
+
+// ── TC-08: select_relay_node — 후보 없을 때 빈 문자열 ───────────────────────
+
+static void tc_select_relay_no_candidates() {
+    begin_test("TC-08: select_relay_node — 후보 없을 때 빈 문자열 반환");
+
+    // 케이스 A: CT 비어 있음
+    {
+        ConnectionTableManager ct;
+        ct.init("", "");
+        std::string best = select_relay_node(ct, SELF_ID);
+        CHECK_TRUE(best.empty());
+    }
+
+    // 케이스 B: CORE 역할만 있고 NODE 역할 없음
+    {
+        ConnectionTableManager ct;
+        ct.init("", "");
+        NodeEntry core = {};
+        strncpy(core.id, NODE_A, UUID_LEN - 1);
+        core.role = NODE_ROLE_CORE; core.status = NODE_STATUS_ONLINE; core.hop_to_core = 0;
+        ct.addNode(core);
+
+        LinkEntry lc = {};
+        strncpy(lc.from_id, SELF_ID, UUID_LEN - 1);
+        strncpy(lc.to_id,   NODE_A,  UUID_LEN - 1);
+        lc.rtt_ms = 1.0f;
+        ct.addLink(lc);
+
+        std::string best = select_relay_node(ct, SELF_ID);
+        CHECK_TRUE(best.empty());  // CORE는 Relay 후보 아님
+    }
+
+    // 케이스 C: NODE 있지만 모두 OFFLINE
+    {
+        ConnectionTableManager ct;
+        ct.init("", "");
+        NodeEntry na = {};
+        strncpy(na.id, NODE_A, UUID_LEN - 1);
+        na.role = NODE_ROLE_NODE; na.status = NODE_STATUS_OFFLINE; na.hop_to_core = 1;
+        ct.addNode(na);
+
+        LinkEntry la = {};
+        strncpy(la.from_id, SELF_ID, UUID_LEN - 1);
+        strncpy(la.to_id,   NODE_A,  UUID_LEN - 1);
+        la.rtt_ms = 5.0f;
+        ct.addLink(la);
+
+        std::string best = select_relay_node(ct, SELF_ID);
+        CHECK_TRUE(best.empty());
+    }
+
+    end_test("TC-08: select_relay_node — 후보 없을 때 빈 문자열 반환");
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+int main() {
+    printf("════════════════════════════════════════════════════\n");
+    printf(" Edge Logic Tests\n");
+    printf("════════════════════════════════════════════════════\n\n");
+
+    tc_infer_msg_type();
+    tc_infer_priority();
+    tc_parse_building_camera();
+    tc_select_relay_rtt_min();
+    tc_select_relay_hop_tiebreak();
+    tc_select_relay_offline_excluded();
+    tc_select_relay_no_rtt_excluded();
+    tc_select_relay_no_candidates();
+
+    printf("══════════════════════════════════════\n");
+    printf("  결과: %d passed, %d failed\n", g_pass, g_fail);
+    printf("══════════════════════════════════════\n");
+    return g_fail == 0 ? 0 : 1;
+}
