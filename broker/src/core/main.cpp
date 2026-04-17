@@ -219,22 +219,9 @@ static void on_message(struct mosquitto* mosq, void* userdata,
         std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
         if (!connection_table_from_json(json, remote)) return;
 
-        // 구버전 CT 무시 (FR-01)
-        if (remote.version <= ctx->ct_manager->snapshot().version) return;
-
-        bool changed = false;
-        if (remote.backup_core_id[0] != '\0') {
-            ConnectionTable local_snapshot = ctx->ct_manager->snapshot();
-            if (std::strncmp(local_snapshot.backup_core_id, remote.backup_core_id, UUID_LEN) != 0) {
-                ctx->ct_manager->setBackupCoreId(remote.backup_core_id);
-                changed = true;
-            }
-            changed = ensure_link(ctx->ct_manager, ctx->core_id, remote.backup_core_id) || changed;
-        }
-
-        if (merge_connection_tables(*ctx->ct_manager, remote)) {
-            changed = true;
-        }
+        // node_register 는 backup bootstrap/재등록 채널이다.
+        // CT_SYNC 와 달리 같은 version 이어도 backup_core_id 와 신규 노드를 merge 해야 한다.
+        bool changed = merge_backup_registration(*ctx->ct_manager, ctx->core_id, remote);
 
         if (changed) {
             publish_topology(mosq, ctx);

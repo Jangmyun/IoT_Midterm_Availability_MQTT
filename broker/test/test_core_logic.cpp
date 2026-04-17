@@ -45,6 +45,8 @@ static void end_test(const char* name) {
 // ── 테스트 상수 ───────────────────────────────────────────────────────────────
 
 #define NODE_1  "cccccccc-0000-0000-0000-000000000003"
+#define CORE_A  "aaaaaaaa-0000-0000-0000-000000000001"
+#define CORE_B  "bbbbbbbb-0000-0000-0000-000000000002"
 #define MSG_EVT "550e8400-e29b-41d4-a716-446655440000"
 
 // ── TC-01: parse_ip_port 정상 케이스 ─────────────────────────────────────────
@@ -308,6 +310,78 @@ static void tc_merge_online_wins() {
     end_test("TC-08: merge_connection_tables — ONLINE 우선");
 }
 
+// ── TC-09: addLink — identical input is idempotent ──────────────────────────
+
+static void tc_add_link_idempotent() {
+    begin_test("TC-09: addLink — identical input is idempotent");
+
+    ConnectionTableManager ct;
+    ct.init("", "");
+
+    LinkEntry link = {};
+    std::strncpy(link.from_id, CORE_A, UUID_LEN - 1);
+    std::strncpy(link.to_id, CORE_B, UUID_LEN - 1);
+    link.rtt_ms = 0.0f;
+
+    CHECK_TRUE(ct.addLink(link));
+    int version_after_first_add = ct.snapshot().version;
+
+    CHECK_FALSE(ct.addLink(link));
+    CHECK_EQ(ct.snapshot().version, version_after_first_add);
+
+    link.rtt_ms = 1.25f;
+    CHECK_TRUE(ct.addLink(link));
+    CHECK_EQ(ct.snapshot().version, version_after_first_add + 1);
+
+    end_test("TC-09: addLink — identical input is idempotent");
+}
+
+// ── TC-10: merge_backup_registration — equal version bootstrap merge ────────
+
+static void tc_merge_backup_registration_equal_version() {
+    begin_test("TC-10: merge_backup_registration — equal version bootstrap merge");
+
+    ConnectionTableManager local;
+    local.init(CORE_A, "");
+    {
+        NodeEntry active = {};
+        std::strncpy(active.id, CORE_A, UUID_LEN - 1);
+        active.role = NODE_ROLE_CORE;
+        std::strncpy(active.ip, "127.0.0.1", IP_LEN - 1);
+        active.port = 1883;
+        active.status = NODE_STATUS_ONLINE;
+        active.hop_to_core = 0;
+        local.addNode(active);
+    }
+
+    ConnectionTable remote = {};
+    remote.version = 1;
+    std::strncpy(remote.backup_core_id, CORE_B, UUID_LEN - 1);
+    {
+        NodeEntry backup = {};
+        std::strncpy(backup.id, CORE_B, UUID_LEN - 1);
+        backup.role = NODE_ROLE_CORE;
+        std::strncpy(backup.ip, "127.0.0.1", IP_LEN - 1);
+        backup.port = 1884;
+        backup.status = NODE_STATUS_ONLINE;
+        backup.hop_to_core = 1;
+        remote.nodes[remote.node_count++] = backup;
+    }
+
+    CHECK_TRUE(merge_backup_registration(local, CORE_A, remote));
+
+    ConnectionTable first = local.snapshot();
+    CHECK_STREQ(first.active_core_id, CORE_A);
+    CHECK_STREQ(first.backup_core_id, CORE_B);
+    CHECK_EQ(first.node_count, 2);
+    CHECK_TRUE(local.findNode(CORE_B).has_value());
+    CHECK_TRUE(local.findLink(CORE_A, CORE_B).has_value());
+
+    CHECK_FALSE(merge_backup_registration(local, CORE_A, remote));
+
+    end_test("TC-10: merge_backup_registration — equal version bootstrap merge");
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -319,6 +393,8 @@ int main() {
     tc_edge_registration_roundtrip();
     tc_merge_disjoint();
     tc_merge_online_wins();
+    tc_add_link_idempotent();
+    tc_merge_backup_registration_equal_version();
 
     printf("══════════════════════════════════════\n");
     printf("  결과: %d passed, %d failed\n", g_pass, g_fail);

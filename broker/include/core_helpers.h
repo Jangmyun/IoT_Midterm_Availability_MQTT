@@ -49,3 +49,38 @@ inline bool merge_connection_tables(ConnectionTableManager& local,
     }
     return changed;
 }
+
+// Merge Backup Core registration into Active Core's CT.
+// Unlike CT_SYNC, this path must accept equal versions during bootstrap because:
+// - Active starts with version=1 (self node only)
+// - Backup starts with version=1 (self node + backup_core_id)
+// The merge must still learn backup_core_id and backup node on first registration.
+inline bool merge_backup_registration(ConnectionTableManager& local,
+                                      const char* active_core_id,
+                                      const ConnectionTable& remote) {
+    bool changed = false;
+
+    if (remote.backup_core_id[0] != '\0') {
+        ConnectionTable local_snapshot = local.snapshot();
+        if (std::strncmp(local_snapshot.backup_core_id, remote.backup_core_id, UUID_LEN) != 0) {
+            local.setBackupCoreId(remote.backup_core_id);
+            changed = true;
+        }
+
+        if (active_core_id && active_core_id[0] != '\0') {
+            LinkEntry link = {};
+            std::strncpy(link.from_id, active_core_id, UUID_LEN - 1);
+            std::strncpy(link.to_id, remote.backup_core_id, UUID_LEN - 1);
+            link.rtt_ms = 0.0f;
+            if (local.addLink(link)) {
+                changed = true;
+            }
+        }
+    }
+
+    if (merge_connection_tables(local, remote)) {
+        changed = true;
+    }
+
+    return changed;
+}
