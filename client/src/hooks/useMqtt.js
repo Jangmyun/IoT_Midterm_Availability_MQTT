@@ -3,9 +3,24 @@ import mqtt from 'mqtt';
 import { parseConnectionTable, parseMqttMessage } from '../mqtt/parsers.js';
 
 const DEFAULT_URL = import.meta.env.VITE_MQTT_URL ?? 'ws://localhost:9001';
+const DEFAULT_WS_PORT = import.meta.env.VITE_MQTT_WS_PORT ?? '9001';
 const MAX_EVENTS = 50;
 const MAX_ALERTS = 20;
 const ALERT_TTL_MS = 5000;
+
+function parseBrokerEndpoint(description) {
+  if (typeof description !== 'string') return null;
+
+  const trimmed = description.trim();
+  const lastColon = trimmed.lastIndexOf(':');
+  if (lastColon <= 0) return null;
+
+  const host = trimmed.slice(0, lastColon);
+  const port = Number(trimmed.slice(lastColon + 1));
+  if (!host || !Number.isInteger(port) || port <= 0) return null;
+
+  return { host, port };
+}
 
 /**
  * MQTT WebSocket 연결 + 전체 토픽 구독 + JSON 파싱 + Core 재연결
@@ -41,6 +56,38 @@ export function useMqtt() {
       reconnectPeriod: 3000,
     });
     clientRef.current = client;
+
+    const reconnectToHost = (host, reason) => {
+      if (!host) return;
+
+      let protocol = 'ws:';
+      let wsPort = DEFAULT_WS_PORT;
+
+      try {
+        const currentUrl = new URL(brokerUrl);
+        protocol = currentUrl.protocol || protocol;
+        wsPort = currentUrl.port || wsPort;
+      } catch {
+        // 현재 URL이 비정상이어도 기본 WS 설정으로 재연결 시도
+      }
+
+      const newUrl = `${protocol}//${host}:${wsPort}`;
+      if (newUrl === brokerUrl) return;
+
+      setReconnectInfo({ url: newUrl, reason });
+      clientRef.current?.end(true);
+      setBrokerUrl(newUrl);
+    };
+
+    const reconnectToBackup = (reason) => {
+      const ct = topologyRef.current;
+      if (!ct) return;
+
+      const backupNode = ct.nodes.find(n => n.id === ct.backup_core_id);
+      if (!backupNode) return;
+
+      reconnectToHost(backupNode.ip, reason);
+    };
 
     client.on('connect', () => {
       setStatus('connected');
@@ -125,7 +172,12 @@ export function useMqtt() {
           setAlerts(prev => prev.filter(a => a.ts !== alert.ts));
         }, ALERT_TTL_MS);
         forceAcceptNextRef.current = true;
-        reconnectToBackup('A-03');
+        const endpoint = parseBrokerEndpoint(parsed?.payload?.description);
+        if (endpoint) {
+          reconnectToHost(endpoint.host, 'A-03');
+        } else {
+          reconnectToBackup('A-03');
+        }
         return;
       }
 
@@ -154,26 +206,6 @@ export function useMqtt() {
 
     return () => { client.end(true); };
   }, [brokerUrl]); // brokerUrl 변경 시 재연결
-
-  /**
-   * topology의 backup_core_id 노드 IP:Port로 재연결.
-   * topology를 ref로 참조해 클로저 stale 문제를 방지.
-   * @param {'W-01'|'A-03'} reason - 재연결 트리거 원인
-   */
-  function reconnectToBackup(reason) {
-    const ct = topologyRef.current;
-    if (!ct) return;
-
-    const backupNode = ct.nodes.find(n => n.id === ct.backup_core_id);
-    if (!backupNode) return;
-
-    const newUrl = `ws://${backupNode.ip}:${backupNode.port}`;
-    if (newUrl === brokerUrl) return; // 이미 같은 주소면 무시
-
-    setReconnectInfo({ url: newUrl, reason });
-    clientRef.current?.end(true);
-    setBrokerUrl(newUrl); // state 변경 → useEffect 재실행 → 재연결
-  }
 
   return { status, topology, events, alerts, reconnectInfo, brokerUrl, setBrokerUrl };
 }
