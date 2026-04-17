@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "test": "node --test src/mqtt/parsers.test.js",
+    "build": "npm run test && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },

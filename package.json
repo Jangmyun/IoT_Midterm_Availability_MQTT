@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "scripts": {
     "client:dev": "npm run dev --prefix client",
+    "client:test": "npm run test --prefix client",
     "client:build": "npm run build --prefix client",
     "broker:configure": "cmake -S broker -B broker/build",
     "broker:build": "cmake --build broker/build",

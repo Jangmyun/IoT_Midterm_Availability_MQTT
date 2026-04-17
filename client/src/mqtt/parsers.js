@@ -13,6 +13,8 @@ export function parseConnectionTable(raw) {
 
     // C++ 파서와 동일한 필수 필드 확인
     if (typeof j.version !== 'number') return null;
+    if (typeof j.active_core_id !== 'string') return null;
+    if (typeof j.backup_core_id !== 'string') return null;
     if (!Array.isArray(j.nodes) || !Array.isArray(j.links)) return null;
 
     return {

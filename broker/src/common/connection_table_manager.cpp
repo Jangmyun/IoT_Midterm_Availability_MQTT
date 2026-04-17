@@ -2,6 +2,7 @@
 #include <cstring>
 #include <ctime>
 #include <cstdio>
+#include <cmath>
 
 // Util =====================================================
 
@@ -85,6 +86,9 @@ bool ConnectionTableManager::addLink(const LinkEntry& link) {
     for (int i = 0; i < table_.link_count; i++) {
         if (std::strncmp(table_.links[i].from_id, link.from_id, UUID_LEN) == 0 &&
             std::strncmp(table_.links[i].to_id, link.to_id, UUID_LEN) == 0) {
+            if (std::fabs(table_.links[i].rtt_ms - link.rtt_ms) < 0.0001f) {
+                return false;
+            }
             table_.links[i].rtt_ms = link.rtt_ms;
             bumpVersion();
             return true;
