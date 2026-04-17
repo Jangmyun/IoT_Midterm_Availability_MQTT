@@ -459,7 +459,7 @@ typedef struct {
 
 ---
 
-## 14. 현재 개발 진행도 (2026-04-17 기준)
+## 14. 현재 개발 진행도 (2026-04-17 기준, Phase 3 완료)
 
 ### 14.1 구현 완료 항목
 
@@ -473,9 +473,11 @@ typedef struct {
 | UUID 생성기 (RFC 4122 v4, thread-local mt19937_64) | `broker/include/uuid.h` |
 | MqttMessage 구조체 + 토픽 상수 21개 정의 (TOPIC_NODE_REGISTER 포함) | `broker/include/message.h` |
 | 순수 로직 헬퍼 — parse_ip_port, make_alert_topic, merge_connection_tables | `broker/include/core_helpers.h` |
+| Edge 순수 로직 헬퍼 — infer_msg_type, infer_priority, parse_building_camera, select_relay_node | `broker/include/edge_helpers.h` |
 | nlohmann/json 3.11.3 FetchContent, 크로스플랫폼 CMake 빌드 시스템 | `broker/CMakeLists.txt` |
 | 직렬화/역직렬화 단위 테스트 (TC-01~TC-09, 9개 케이스) | `broker/test/test_json.cpp` |
 | Core 로직 단위 테스트 (TC-01~TC-08, 8개 케이스) | `broker/test/test_core_logic.cpp` |
+| Edge 로직 단위 테스트 (TC-01~TC-08, 32 assertions) | `broker/test/test_edge_logic.cpp` |
 
 #### Core Broker (`broker/src/core/main.cpp`)
 
@@ -505,7 +507,7 @@ typedef struct {
 | UUID 자동 생성 (edge_id), outbound IP 자동 감지 (UDP SOCK_DGRAM) | — |
 | mosq_core — Active Core 연결, LWT(W-02) 설정, 등록(M-03) publish | W-02, 5.3 |
 | CT(M-04) 수신 → version 비교 후 구버전 무시, 최신 CT를 `ct_manager`에 반영 | M-04, FR-01, FR-09 |
-| Ping/Pong 응답 (M-01/M-02) | M-01, M-02 |
+| Ping/Pong 응답 (M-01/M-02) — 외부 Ping 수신 시 Pong 발행 | M-01, M-02 |
 | mosq_local — 로컬 CCTV `campus/data/#` 구독, build_event_message() (타입·우선순위 자동 추론) | FR-01 |
 | mosq_backup — Backup Core 선택적 연결 (`[backup_core_ip] [backup_core_port]`) | FR-05 |
 | Core LWT(W-01) 수신 → prefer_backup 모드 전환, 저장 큐 즉시 flush 시도 | FR-05 |
@@ -515,6 +517,10 @@ typedef struct {
 | on_connect_backup — Backup Core 등록 + 큐 flush | FR-05 |
 | `campus/alert/core_switch` 수신 → `parse_ip_port` → `mosq_core` 재연결 (`active_core_ip/port` 갱신) | FR-05, A-03 |
 | CT 수신 시 `active_core_id` 변경 감지 → `findNode` → 새 IP:Port로 `mosq_core` 재연결 | FR-05, FR-10 |
+| CT 수신 후 ONLINE NODE에 Ping 발송 + 발송 시각 기록 (`ping_send_times`, `ping_mutex`) | FR-08, M-01 |
+| Pong 수신 → RTT 계산 → `ct_manager.addLink()` RTT 갱신 | FR-08, M-02 |
+| `select_relay_node()` — RTT 최소 + `hop_to_core` 최소 기준 `relay_node_id` 갱신 | FR-08, 5.6 |
+| `campus/monitor/pong/<edge_id>` 구독 추가 (RTT 측정 수신용) | FR-08 |
 
 #### Web Client
 
@@ -529,14 +535,6 @@ typedef struct {
 ---
 
 ### 14.2 미완료 항목
-
-#### Edge Broker
-
-| 구성요소 | 관련 FR | 비고 |
-| -------- | ------- | ---- |
-| CT 수신 후 인접 Node에 Ping 발송 (RTT 측정 시작) | FR-08 | Phase 3 |
-| Pong 수신 → RTT 계산 + LinkEntry 갱신 | FR-08 | Phase 3 |
-| RTT + hop_to_core 기반 최적 Relay Node 선택 | FR-08 | Phase 3 |
 
 #### 기타
 
@@ -565,7 +563,7 @@ Phase 5+/6 구현으로 이전 설계 제약이 모두 해소되었다.
 | ----- | ---- | ------- | ---- |
 | **1** | End-to-End 정상 동작 (CCTV → Edge → Core → Client) | FR-01, FR-02, FR-03, FR-06 | ✅ 완료 |
 | **2** | Core 장애 대응 + Store-and-Forward | FR-04, FR-05, FR-07, FR-14 | ✅ 완료 |
-| **3** | RTT 측정 + Relay 경로 선택 | FR-08 | ⬜ 미착수 |
+| **3** | RTT 측정 + Relay 경로 선택 | FR-08 | ✅ 완료 |
 | **4** | Web Client 이벤트 로그 + 토폴로지 그래프 | FR-11, FR-12 | ✅ 완료 |
 | **5**  | Core 미완료 항목 (CT version 비교, Node 복구, Election) | FR-01, FR-10, FR-13 | ✅ 완료 |
 | **5+** | Core Election 분산 환경 지원 (peer 채널 핸들러, voter 중복 방지, peer core_switch) | FR-10, FR-14 | ✅ 완료 |
