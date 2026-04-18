@@ -70,3 +70,15 @@ add_test(NAME test_core_logic COMMAND test_core_logic)
 add_executable(test_edge_logic test/test_edge_logic.cpp)
 target_link_libraries(test_edge_logic PRIVATE broker_common)
 add_test(NAME test_edge_logic COMMAND test_edge_logic)
+
+add_executable(test_publisher_logic test/test_publisher_logic.cpp)
+target_link_libraries(test_publisher_logic PRIVATE broker_common)
+add_test(NAME test_publisher_logic COMMAND test_publisher_logic)
+
+# ── Publisher simulator ───────────────────────────────────────────────────────
+add_executable(pub_sim src/publisher/main.cpp)
+target_link_libraries(pub_sim PRIVATE
+    broker_common
+    PkgConfig::MOSQUITTO
+    PkgConfig::CJSON
+)

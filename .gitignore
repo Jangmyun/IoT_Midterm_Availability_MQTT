@@ -172,3 +172,4 @@ $RECYCLE.BIN/
 broker/build/*broker*
 broker/build/test_*
 demo/local-demo.env
+pub_sim
