@@ -37,6 +37,29 @@ static void handle_signal(int) { g_running = false; }
 
 // CT 발행 헬퍼 =====================================================
 
+static std::string build_core_lwt_json(const char* core_id) {
+    MqttMessage lwt = {};
+    uuid_generate(lwt.msg_id);
+    lwt.type = MSG_TYPE_LWT_CORE;
+    lwt.source.role = NODE_ROLE_CORE;
+    std::strncpy(lwt.source.id, core_id, UUID_LEN - 1);
+    lwt.source.id[UUID_LEN - 1] = '\0';
+    lwt.delivery = { 1, false, false };
+    return mqtt_message_to_json(lwt);
+}
+
+static void publish_core_down_notice(struct mosquitto* mosq, const char* core_id) {
+    if (!mosq || !core_id || core_id[0] == '\0') {
+        return;
+    }
+
+    char topic[128];
+    std::snprintf(topic, sizeof(topic), "%s%s", TOPIC_LWT_CORE_PREFIX, core_id);
+    std::string lwt_json = build_core_lwt_json(core_id);
+    mosquitto_publish(mosq, nullptr, topic,
+        (int)lwt_json.size(), lwt_json.c_str(), 1, false);
+}
+
 // 자신 브로커의 TOPIC_TOPOLOGY 에 최신 CT 발행
 static void publish_topology(struct mosquitto* mosq, CoreContext* ctx) {
     ConnectionTable ct = ctx->ct_manager->snapshot();
@@ -155,6 +178,37 @@ static void on_message(struct mosquitto* mosq, void* userdata,
                 (int)json.size(), json.c_str(), 1, false);
 
             printf("[core] node offline: %s  (ct.version=%d)\n", node_id, ct.version);
+        }
+        return;
+    }
+
+    // Backup Core 종료 감지: ACTIVE는 backup 상태를 CT와 client view에서 제거한다.
+    if (strncmp(msg->topic, "campus/will/core/", 17) == 0) {
+        const char* core_id = msg->topic + 17;
+        if (std::strcmp(core_id, ctx->core_id) == 0) {
+            return;
+        }
+
+        if (!ctx->is_backup) {
+            ConnectionTable snapshot = ctx->ct_manager->snapshot();
+            bool changed = false;
+
+            if (snapshot.backup_core_id[0] != '\0' &&
+                std::strncmp(snapshot.backup_core_id, core_id, UUID_LEN) == 0) {
+                ctx->ct_manager->setBackupCoreId("");
+                changed = true;
+            }
+
+            auto failed_core = ctx->ct_manager->findNode(core_id);
+            if (failed_core.has_value() && failed_core->status != NODE_STATUS_OFFLINE) {
+                changed = ctx->ct_manager->setNodeStatus(core_id, NODE_STATUS_OFFLINE) || changed;
+            }
+
+            if (changed) {
+                on_ct_changed(mosq, ctx);
+                printf("[core] peer core offline: %s  (ct.version=%d)\n",
+                    core_id, ctx->ct_manager->snapshot().version);
+            }
         }
         return;
     }
@@ -546,16 +600,10 @@ int main(int argc, char* argv[]) {
     // 5. LWT 설정 (W-01): 자신의 종료 알림 (payload에 backup 정보 불포함)
     //    Failover 신호는 Backup Core가 campus/alert/core_switch 로 전달
     {
-        MqttMessage lwt = {};
-        uuid_generate(lwt.msg_id);
-        lwt.type = MSG_TYPE_LWT_CORE;
-        lwt.source.role = NODE_ROLE_CORE;
-        strncpy(lwt.source.id, ctx.core_id, UUID_LEN - 1);
-
         char lwt_topic[128];
         snprintf(lwt_topic, sizeof(lwt_topic), "%s%s", TOPIC_LWT_CORE_PREFIX, ctx.core_id);
 
-        std::string lwt_json = mqtt_message_to_json(lwt);
+        std::string lwt_json = build_core_lwt_json(ctx.core_id);
         mosquitto_will_set(mosq, lwt_topic,
             (int)lwt_json.size(), lwt_json.c_str(), 1, false);
     }
@@ -597,6 +645,14 @@ int main(int argc, char* argv[]) {
             mosquitto_disconnect_callback_set(mosq_peer, on_disconnect_peer);
             mosquitto_reconnect_delay_set(mosq_peer, 2, 30, false);
 
+            {
+                char lwt_topic[128];
+                snprintf(lwt_topic, sizeof(lwt_topic), "%s%s", TOPIC_LWT_CORE_PREFIX, ctx.core_id);
+                std::string lwt_json = build_core_lwt_json(ctx.core_id);
+                mosquitto_will_set(mosq_peer, lwt_topic,
+                    (int)lwt_json.size(), lwt_json.c_str(), 1, false);
+            }
+
             if (mosquitto_connect(mosq_peer, active_core_ip, active_core_port, 60)
                 == MOSQ_ERR_SUCCESS) {
                 mosquitto_loop_start(mosq_peer);
@@ -617,6 +673,14 @@ int main(int argc, char* argv[]) {
 
     // 8. 정상 종료
     printf("[core] shutting down\n");
+    publish_core_down_notice(mosq, ctx.core_id);
+    if (mosq_peer) {
+        publish_core_down_notice(mosq_peer, ctx.core_id);
+    }
+    {
+        struct timespec flush_ts = { 0, 250 * 1000 * 1000 };
+        nanosleep(&flush_ts, nullptr);
+    }
     if (mosq_peer) {
         mosquitto_loop_stop(mosq_peer, true);
         mosquitto_destroy(mosq_peer);

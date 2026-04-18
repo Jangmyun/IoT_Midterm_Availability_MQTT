@@ -105,6 +105,31 @@ static void set_now_utc(char* out, size_t len)
     std::strftime(out, len, "%Y-%m-%dT%H:%M:%SZ", utc);
 }
 
+static std::string build_edge_lwt_json(EdgeContext* ctx)
+{
+    MqttMessage lwt = {};
+    uuid_generate(lwt.msg_id);
+    lwt.type = MSG_TYPE_LWT_NODE;
+    lwt.source.role = NODE_ROLE_NODE;
+    std::strncpy(lwt.source.id, ctx->edge_id, UUID_LEN - 1);
+    lwt.source.id[UUID_LEN - 1] = '\0';
+    lwt.delivery = { 1, false, false };
+    return mqtt_message_to_json(lwt);
+}
+
+static void publish_edge_down_notice(struct mosquitto* mosq, EdgeContext* ctx)
+{
+    if (!mosq || !ctx) {
+        return;
+    }
+
+    char topic[128];
+    std::snprintf(topic, sizeof(topic), "%s%s", TOPIC_LWT_NODE_PREFIX, ctx->edge_id);
+    std::string lwt_json = build_edge_lwt_json(ctx);
+    mosquitto_publish(mosq, nullptr, topic,
+        (int)lwt_json.size(), lwt_json.c_str(), 1, false);
+}
+
 
 // core / backup 공통 등록 함수
 static void publish_edge_status(struct mosquitto* mosq, EdgeContext* ctx, const char* label)
@@ -830,22 +855,11 @@ int main(int argc, char* argv[])
 
     // 6. LWT 설정 (W-02): 비정상 종료 시 core가 OFFLINE 처리
     {
-        MqttMessage lwt = {};
-        std::strncpy(lwt.msg_id, ctx.edge_id, UUID_LEN - 1);
-        lwt.msg_id[UUID_LEN - 1] = '\0';
-
-        lwt.type = MSG_TYPE_LWT_NODE;
-        lwt.source.role = NODE_ROLE_NODE;
-        std::strncpy(lwt.source.id, ctx.edge_id, UUID_LEN - 1);
-        lwt.source.id[UUID_LEN - 1] = '\0';
-
-        lwt.delivery = { 1, false, false };
-
         char lwt_topic[128];
         std::snprintf(lwt_topic, sizeof(lwt_topic), "%s%s",
             TOPIC_LWT_NODE_PREFIX, ctx.edge_id);
 
-        std::string lwt_json = mqtt_message_to_json(lwt);
+        std::string lwt_json = build_edge_lwt_json(&ctx);
         mosquitto_will_set(mosq_core, lwt_topic,
             (int)lwt_json.size(), lwt_json.c_str(), 1, false);
     }
@@ -853,22 +867,11 @@ int main(int argc, char* argv[])
     // backup core에도 동일한 LWT 설정
     if (mosq_backup)
     {
-        MqttMessage lwt_backup = {};
-        std::strncpy(lwt_backup.msg_id, ctx.edge_id, UUID_LEN - 1);
-        lwt_backup.msg_id[UUID_LEN - 1] = '\0';
-
-        lwt_backup.type = MSG_TYPE_LWT_NODE;
-        lwt_backup.source.role = NODE_ROLE_NODE;
-        std::strncpy(lwt_backup.source.id, ctx.edge_id, UUID_LEN - 1);
-        lwt_backup.source.id[UUID_LEN - 1] = '\0';
-
-        lwt_backup.delivery = { 1, false, false };
-
         char lwt_topic_backup[128];
         std::snprintf(lwt_topic_backup, sizeof(lwt_topic_backup), "%s%s",
             TOPIC_LWT_NODE_PREFIX, ctx.edge_id);
 
-        std::string lwt_json_backup = mqtt_message_to_json(lwt_backup);
+        std::string lwt_json_backup = build_edge_lwt_json(&ctx);
         mosquitto_will_set(mosq_backup, lwt_topic_backup,
             (int)lwt_json_backup.size(), lwt_json_backup.c_str(), 1, false);
     }
@@ -961,6 +964,15 @@ int main(int argc, char* argv[])
     }
 
     std::printf("[edge] shutting down\n");
+    publish_edge_down_notice(mosq_core, &ctx);
+    if (mosq_backup)
+    {
+        publish_edge_down_notice(mosq_backup, &ctx);
+    }
+    {
+        struct timespec flush_ts = { 0, 250 * 1000 * 1000 };
+        nanosleep(&flush_ts, nullptr);
+    }
 
     if (mosq_backup)
     {
