@@ -437,9 +437,15 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
 
     // Active Core LWT 수신 (W-01): campus/alert/core_switch 발행 → Edge 재연결 유도
     if (strncmp(msg->topic, "campus/will/core/", 17) == 0) {
-        printf("[core/backup] active core down: %s — promoting self\n", msg->topic + 17);
+        const char* failed_core_id = msg->topic + 17;
+        if (!should_promote_backup_on_core_will(*ctx->ct_manager, ctx->core_id, failed_core_id)) {
+            printf("[core/backup] ignoring non-active core down: %s\n", failed_core_id);
+            return;
+        }
 
-        promote_core_after_failover(*ctx->ct_manager, ctx->core_id, msg->topic + 17);
+        printf("[core/backup] active core down: %s — promoting self\n", failed_core_id);
+
+        promote_core_after_failover(*ctx->ct_manager, ctx->core_id, failed_core_id);
         ctx->is_backup = false;
 
         publish_active_view(ctx->mosq_self, ctx);

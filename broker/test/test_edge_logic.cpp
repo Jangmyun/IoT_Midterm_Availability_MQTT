@@ -47,6 +47,8 @@ static void end_test(const char* name) {
 #define NODE_A    "bbbbbbbb-0000-0000-0000-000000000002"
 #define NODE_B    "cccccccc-0000-0000-0000-000000000003"
 #define NODE_C    "dddddddd-0000-0000-0000-000000000004"
+#define CORE_A    "eeeeeeee-0000-0000-0000-000000000005"
+#define CORE_B    "ffffffff-0000-0000-0000-000000000006"
 
 // ── TC-01: infer_msg_type ─────────────────────────────────────────────────────
 
@@ -359,6 +361,37 @@ static void tc_select_relay_no_candidates() {
     end_test("TC-08: select_relay_node — 후보 없을 때 빈 문자열 반환");
 }
 
+// ── TC-09: should_failover_on_core_will — active core에만 반응 ───────────────
+
+static void tc_should_failover_on_active_core_will() {
+    begin_test("TC-09: should_failover_on_core_will — active core에만 반응");
+
+    ConnectionTableManager ct;
+    ct.init(CORE_A, CORE_B);
+
+    CHECK_TRUE(should_failover_on_core_will(ct, CORE_A));
+    CHECK_FALSE(should_failover_on_core_will(ct, CORE_B));
+    CHECK_TRUE(is_backup_core_will(ct, CORE_B));
+    CHECK_FALSE(is_backup_core_will(ct, CORE_A));
+
+    end_test("TC-09: should_failover_on_core_will — active core에만 반응");
+}
+
+// ── TC-10: should_failover_on_core_will — CT 미동기화 시 보수적 true ─────────
+
+static void tc_should_failover_without_active_core_id() {
+    begin_test("TC-10: should_failover_on_core_will — CT 미동기화 시 보수적 true");
+
+    ConnectionTableManager ct;
+    ct.init("", CORE_B);
+
+    CHECK_TRUE(should_failover_on_core_will(ct, CORE_A));
+    CHECK_FALSE(is_backup_core_will(ct, CORE_A));
+    CHECK_TRUE(is_backup_core_will(ct, CORE_B));
+
+    end_test("TC-10: should_failover_on_core_will — CT 미동기화 시 보수적 true");
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -374,6 +407,8 @@ int main() {
     tc_select_relay_offline_excluded();
     tc_select_relay_no_rtt_excluded();
     tc_select_relay_no_candidates();
+    tc_should_failover_on_active_core_will();
+    tc_should_failover_without_active_core_id();
 
     printf("══════════════════════════════════════\n");
     printf("  결과: %d passed, %d failed\n", g_pass, g_fail);

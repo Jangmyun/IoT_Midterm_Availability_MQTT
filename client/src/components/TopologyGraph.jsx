@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import cytoscape from 'cytoscape';
+import { classifyTopologyLink } from './topologyGraphModel.js';
 
 /**
  * TopologyGraph
@@ -7,6 +8,8 @@ import cytoscape from 'cytoscape';
  * - CORE 노드: 보라색 다이아몬드
  * - NODE ONLINE: 초록
  * - NODE OFFLINE: 빨강(반투명)
+ * - Active Core 링크: 실선
+ * - Backup Core 링크: 점선(standby)
  * - Edge 라벨: RTT(ms)
  * - 노드 클릭 시 onNodeClick(id) 호출
  * - 배경 클릭 시 onNodeClick(null) 호출
@@ -112,6 +115,26 @@ export default function TopologyGraph({ topology, onNodeClick }) {
             'overlay-opacity': 0,
           },
         },
+        {
+          selector: 'edge[edgeKind = "active-link"]',
+          style: {
+            width: 4,
+            'line-color': '#94a3b8',
+            'target-arrow-color': '#94a3b8',
+            'line-style': 'solid',
+            opacity: 0.95,
+          },
+        },
+        {
+          selector: 'edge[edgeKind = "backup-link"]',
+          style: {
+            width: 2,
+            'line-color': '#64748b',
+            'target-arrow-color': '#64748b',
+            'line-style': 'dashed',
+            opacity: 0.55,
+          },
+        },
       ],
     });
 
@@ -199,6 +222,7 @@ export default function TopologyGraph({ topology, onNodeClick }) {
           source: fromId,
           target: toId,
           rtt: rttValue,
+          edgeKind: classifyTopologyLink(topology, l),
         },
       });
     }

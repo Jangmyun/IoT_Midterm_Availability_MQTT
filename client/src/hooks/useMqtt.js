@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import mqtt from 'mqtt';
 import { parseConnectionTable, parseMqttMessage } from '../mqtt/parsers.js';
-import { buildPresentationTopology } from '../mqtt/topologyVisibility.js';
+import { buildPresentationTopology, reconcileHiddenNodeIds } from '../mqtt/topologyVisibility.js';
 
 const DEFAULT_URL = import.meta.env.VITE_MQTT_URL ?? 'ws://localhost:9001';
 const MAX_EVENTS = 50;
@@ -48,6 +48,7 @@ export function useMqtt() {
 
     const applyPresentationTopology = (rawTopology) => {
       rawTopologyRef.current = rawTopology;
+      hiddenNodeIdsRef.current = reconcileHiddenNodeIds(rawTopology, hiddenNodeIdsRef.current);
       const nextTopology = buildPresentationTopology(rawTopology, hiddenNodeIdsRef.current);
       topologyRef.current = nextTopology;
       setTopology(nextTopology);
@@ -55,6 +56,7 @@ export function useMqtt() {
 
     const refreshVisibleTopology = () => {
       if (!rawTopologyRef.current) return;
+      hiddenNodeIdsRef.current = reconcileHiddenNodeIds(rawTopologyRef.current, hiddenNodeIdsRef.current);
       const nextTopology = buildPresentationTopology(rawTopologyRef.current, hiddenNodeIdsRef.current);
       topologyRef.current = nextTopology;
       setTopology(nextTopology);
@@ -116,17 +118,19 @@ export function useMqtt() {
           topic.startsWith('campus/alert/node_up/')) {
         const ct = parseConnectionTable(raw);
         const nodeId = topic.split('/').pop();
+        const nodeInCt = ct?.nodes?.find((node) => node.id === nodeId) ?? null;
+        const nodeIsOfflineInCt = nodeInCt ? nodeInCt.status === 'OFFLINE' : true;
         if (topic.startsWith('campus/alert/node_down/')) {
-          hiddenNodeIdsRef.current.add(nodeId);
-          pushIncident({
-            key: `node_down:${nodeId}:${ct?.version ?? 'na'}`,
-            type: 'EDGE_DOWN',
-            role: 'NODE',
-            nodeId,
-            ts: Date.now(),
-          });
+          if (nodeIsOfflineInCt) {
+            pushIncident({
+              key: `node_down:${nodeId}:${ct?.version ?? 'na'}`,
+              type: 'EDGE_DOWN',
+              role: 'NODE',
+              nodeId,
+              ts: Date.now(),
+            });
+          }
         } else {
-          hiddenNodeIdsRef.current.delete(nodeId);
           pushIncident({
             key: `node_up:${nodeId}:${ct?.version ?? 'na'}`,
             type: 'EDGE_UP',

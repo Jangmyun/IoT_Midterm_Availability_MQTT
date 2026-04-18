@@ -497,6 +497,8 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
                 }
             }
 
+            ctx->ct_manager->setBackupCoreId(ct.backup_core_id);
+
             for (int i = 0; i < ct.node_count; i++)
             {
                 if (!ctx->ct_manager->addNode(ct.nodes[i]))
@@ -547,7 +549,21 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
     // Core LWT 수신 (W-01): backup core를 사실상 1순위로 승격
     if (std::strncmp(msg->topic, "campus/will/core/", 17) == 0)
     {
-        std::printf("[edge] core down: %s\n", msg->topic + 17);
+        const char* failed_core_id = msg->topic + 17;
+        if (!should_failover_on_core_will(*ctx->ct_manager, failed_core_id))
+        {
+            if (is_backup_core_will(*ctx->ct_manager, failed_core_id))
+            {
+                std::printf("[edge] backup core down: %s\n", failed_core_id);
+            }
+            else
+            {
+                std::printf("[edge] ignoring non-active core down notice: %s\n", failed_core_id);
+            }
+            return;
+        }
+
+        std::printf("[edge] core down: %s\n", failed_core_id);
 
         // active core 경로는 더 이상 우선 사용하지 않음
         ctx->core_connected = false;
@@ -720,6 +736,7 @@ static void on_message_local(struct mosquitto* /*mosq*/, void* userdata,
 static void on_connect_backup(struct mosquitto* mosq, void* userdata, int rc)
 {
     auto* ctx = static_cast<EdgeContext*>(userdata);
+    (void)mosq;
 
     if (rc != 0)
     {
@@ -730,15 +747,6 @@ static void on_connect_backup(struct mosquitto* mosq, void* userdata, int rc)
 
     ctx->backup_connected = true;
     std::printf("[edge] connected to backup core\n");
-
-    // 구독
-    char ping_topic[128];
-    std::snprintf(ping_topic, sizeof(ping_topic), "%s%s", TOPIC_PING_PREFIX, ctx->edge_id);
-    mosquitto_subscribe(mosq, nullptr, TOPIC_TOPOLOGY, 1);
-    mosquitto_subscribe(mosq, nullptr, TOPIC_CORE_WILL_ALL, 1);
-    mosquitto_subscribe(mosq, nullptr, ping_topic, 0);
-
-    publish_edge_status(mosq, ctx, "backup core");
 
     // backup이 살아났으면 저장된 메시지 재전송 시도
     flush_store_queue(ctx);
@@ -756,8 +764,11 @@ static void on_disconnect_backup(struct mosquitto* /*mosq*/, void* userdata, int
 static void on_message_backup(struct mosquitto* mosq, void* userdata,
     const struct mosquitto_message* msg)
 {
-    // 현재 단계에서는 backup core도 core와 동일한 제어 메시지 처리 로직을 사용
-    on_message_core(mosq, userdata, msg);
+    // standby backup 연결은 publish 경로만 유지한다.
+    // topology/core_switch/LWT 제어는 active 경로(mosq_core)에서만 수신한다.
+    (void)mosq;
+    (void)userdata;
+    (void)msg;
 }
 
 // main =====================================================
@@ -853,7 +864,7 @@ int main(int argc, char* argv[])
         ctx.mosq_backup = mosq_backup;
     }
 
-    // 6. LWT 설정 (W-02): 비정상 종료 시 core가 OFFLINE 처리
+    // 6. LWT 설정 (W-02): 비정상 종료 시 active core가 OFFLINE 처리
     {
         char lwt_topic[128];
         std::snprintf(lwt_topic, sizeof(lwt_topic), "%s%s",
@@ -864,17 +875,8 @@ int main(int argc, char* argv[])
             (int)lwt_json.size(), lwt_json.c_str(), 1, false);
     }
 
-    // backup core에도 동일한 LWT 설정
-    if (mosq_backup)
-    {
-        char lwt_topic_backup[128];
-        std::snprintf(lwt_topic_backup, sizeof(lwt_topic_backup), "%s%s",
-            TOPIC_LWT_NODE_PREFIX, ctx.edge_id);
-
-        std::string lwt_json_backup = build_edge_lwt_json(&ctx);
-        mosquitto_will_set(mosq_backup, lwt_topic_backup,
-            (int)lwt_json_backup.size(), lwt_json_backup.c_str(), 1, false);
-    }
+    // standby backup 연결에는 node LWT를 두지 않는다.
+    // edge liveness의 authoritative source 는 active core 경로다.
 
     // 7. 콜백 등록
     mosquitto_connect_callback_set(mosq_core, on_connect_core);
@@ -965,10 +967,6 @@ int main(int argc, char* argv[])
 
     std::printf("[edge] shutting down\n");
     publish_edge_down_notice(mosq_core, &ctx);
-    if (mosq_backup)
-    {
-        publish_edge_down_notice(mosq_backup, &ctx);
-    }
     {
         struct timespec flush_ts = { 0, 250 * 1000 * 1000 };
         nanosleep(&flush_ts, nullptr);

@@ -386,10 +386,73 @@ static void tc_merge_backup_registration_equal_version() {
     end_test("TC-10: merge_backup_registration — equal version bootstrap merge");
 }
 
-// ── TC-11: promote_core_after_failover — 이전 active OFFLINE 처리 ───────────
+// ── TC-11: merge_backup_registration — stale backup이 online edge를 못 내림 ─
+
+static void tc_merge_backup_registration_preserves_active_online_edges() {
+    begin_test("TC-11: merge_backup_registration — stale backup이 online edge를 못 내림");
+
+    ConnectionTableManager local;
+    local.init(CORE_A, CORE_B);
+
+    {
+        NodeEntry active = {};
+        std::strncpy(active.id, CORE_A, UUID_LEN - 1);
+        active.role = NODE_ROLE_CORE;
+        std::strncpy(active.ip, "192.168.0.7", IP_LEN - 1);
+        active.port = 1883;
+        active.status = NODE_STATUS_ONLINE;
+        active.hop_to_core = 0;
+        CHECK_TRUE(local.addNode(active));
+    }
+
+    {
+        NodeEntry edge = {};
+        std::strncpy(edge.id, NODE_1, UUID_LEN - 1);
+        edge.role = NODE_ROLE_NODE;
+        std::strncpy(edge.ip, "192.168.0.9", IP_LEN - 1);
+        edge.port = 1883;
+        edge.status = NODE_STATUS_ONLINE;
+        edge.hop_to_core = 1;
+        CHECK_TRUE(local.addNode(edge));
+    }
+
+    ConnectionTable remote = {};
+    remote.version = 9;
+    std::strncpy(remote.backup_core_id, CORE_B, UUID_LEN - 1);
+    {
+        NodeEntry backup = {};
+        std::strncpy(backup.id, CORE_B, UUID_LEN - 1);
+        backup.role = NODE_ROLE_CORE;
+        std::strncpy(backup.ip, "192.168.0.8", IP_LEN - 1);
+        backup.port = 1883;
+        backup.status = NODE_STATUS_ONLINE;
+        backup.hop_to_core = 1;
+        remote.nodes[remote.node_count++] = backup;
+    }
+    {
+        NodeEntry edge = {};
+        std::strncpy(edge.id, NODE_1, UUID_LEN - 1);
+        edge.role = NODE_ROLE_NODE;
+        std::strncpy(edge.ip, "192.168.0.9", IP_LEN - 1);
+        edge.port = 1883;
+        edge.status = NODE_STATUS_OFFLINE;
+        edge.hop_to_core = 1;
+        remote.nodes[remote.node_count++] = edge;
+    }
+
+    CHECK_TRUE(merge_backup_registration(local, CORE_A, remote));
+
+    auto mergedEdge = local.findNode(NODE_1);
+    CHECK_TRUE(mergedEdge.has_value());
+    CHECK_EQ(mergedEdge->status, NODE_STATUS_ONLINE);
+
+    end_test("TC-11: merge_backup_registration — stale backup이 online edge를 못 내림");
+}
+
+// ── TC-12: promote_core_after_failover — 이전 active OFFLINE 처리 ───────────
 
 static void tc_promote_core_after_failover_marks_failed_active_offline() {
-    begin_test("TC-11: promote_core_after_failover — 이전 active OFFLINE 처리");
+    begin_test("TC-12: promote_core_after_failover — 이전 active OFFLINE 처리");
 
     ConnectionTableManager ct;
     ct.init(CORE_A, CORE_B);
@@ -426,7 +489,47 @@ static void tc_promote_core_after_failover_marks_failed_active_offline() {
     CHECK_EQ(failedActive->status, NODE_STATUS_OFFLINE);
     CHECK_EQ(promotedCore->status, NODE_STATUS_ONLINE);
 
-    end_test("TC-11: promote_core_after_failover — 이전 active OFFLINE 처리");
+    end_test("TC-12: promote_core_after_failover — 이전 active OFFLINE 처리");
+}
+
+// ── TC-13: should_promote_backup_on_core_will — active에만 반응 ───────────────
+
+static void tc_should_promote_backup_on_active_only() {
+    begin_test("TC-13: should_promote_backup_on_core_will — active에만 반응");
+
+    ConnectionTableManager ct;
+    ct.init(CORE_A, CORE_B);
+
+    NodeEntry active = {};
+    std::strncpy(active.id, CORE_A, UUID_LEN - 1);
+    active.role = NODE_ROLE_CORE;
+    active.status = NODE_STATUS_ONLINE;
+    CHECK_TRUE(ct.addNode(active));
+
+    NodeEntry backup = {};
+    std::strncpy(backup.id, CORE_B, UUID_LEN - 1);
+    backup.role = NODE_ROLE_CORE;
+    backup.status = NODE_STATUS_ONLINE;
+    CHECK_TRUE(ct.addNode(backup));
+
+    CHECK_TRUE(should_promote_backup_on_core_will(ct, CORE_B, CORE_A));
+    CHECK_FALSE(should_promote_backup_on_core_will(ct, CORE_B, CORE_B));
+
+    end_test("TC-13: should_promote_backup_on_core_will — active에만 반응");
+}
+
+// ── TC-14: should_promote_backup_on_core_will — active 미확정 시 보수적 허용 ─
+
+static void tc_should_promote_backup_without_active_snapshot() {
+    begin_test("TC-14: should_promote_backup_on_core_will — active 미확정 시 보수적 허용");
+
+    ConnectionTableManager ct;
+    ct.init("", CORE_B);
+
+    CHECK_TRUE(should_promote_backup_on_core_will(ct, CORE_B, CORE_A));
+    CHECK_FALSE(should_promote_backup_on_core_will(ct, CORE_B, CORE_B));
+
+    end_test("TC-14: should_promote_backup_on_core_will — active 미확정 시 보수적 허용");
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -442,7 +545,10 @@ int main() {
     tc_merge_latest_snapshot_wins();
     tc_add_link_idempotent();
     tc_merge_backup_registration_equal_version();
+    tc_merge_backup_registration_preserves_active_online_edges();
     tc_promote_core_after_failover_marks_failed_active_offline();
+    tc_should_promote_backup_on_active_only();
+    tc_should_promote_backup_without_active_snapshot();
 
     printf("══════════════════════════════════════\n");
     printf("  결과: %d passed, %d failed\n", g_pass, g_fail);

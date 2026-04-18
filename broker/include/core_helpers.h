@@ -86,8 +86,34 @@ inline bool merge_backup_registration(ConnectionTableManager& local,
         }
     }
 
-    if (merge_connection_tables(local, remote)) {
-        changed = true;
+    for (int i = 0; i < remote.node_count; i++) {
+        const NodeEntry& rn = remote.nodes[i];
+        auto existing = local.findNode(rn.id);
+
+        if (!existing.has_value()) {
+            local.addNode(rn);
+            changed = true;
+            continue;
+        }
+
+        // Active Core는 edge liveness의 기준이다.
+        // Backup의 stale snapshot 이 ONLINE edge를 OFFLINE으로 덮어쓰면 안 된다.
+        if (rn.role == NODE_ROLE_NODE &&
+            existing->status == NODE_STATUS_ONLINE &&
+            rn.status == NODE_STATUS_OFFLINE) {
+            continue;
+        }
+
+        if (!same_node_entry(*existing, rn)) {
+            local.updateNode(rn);
+            changed = true;
+        }
+    }
+
+    for (int i = 0; i < remote.link_count; i++) {
+        if (local.addLink(remote.links[i])) {
+            changed = true;
+        }
     }
 
     return changed;
@@ -120,4 +146,24 @@ inline bool promote_core_after_failover(ConnectionTableManager& ct_manager,
     }
 
     return changed;
+}
+
+inline bool should_promote_backup_on_core_will(const ConnectionTableManager& ct_manager,
+                                               const char* backup_core_id,
+                                               const char* failed_core_id) {
+    if (!failed_core_id || failed_core_id[0] == '\0') {
+        return false;
+    }
+
+    if (backup_core_id && backup_core_id[0] != '\0' &&
+        std::strncmp(backup_core_id, failed_core_id, UUID_LEN) == 0) {
+        return false;
+    }
+
+    ConnectionTable snapshot = ct_manager.snapshot();
+    if (snapshot.active_core_id[0] == '\0') {
+        return true;
+    }
+
+    return std::strncmp(snapshot.active_core_id, failed_core_id, UUID_LEN) == 0;
 }

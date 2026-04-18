@@ -135,3 +135,32 @@ inline std::string select_relay_node(ConnectionTableManager& ct_manager,
     }
     return best_id;
 }
+
+// campus/will/core/<id> 수신 시 실제 failover가 필요한지 판정
+// 현재 active_core_id 와 일치할 때만 backup 우선 모드로 전환한다.
+// CT 초기 동기화 전(active_core_id 미확정)에는 보수적으로 true를 반환한다.
+inline bool should_failover_on_core_will(const ConnectionTableManager& ct_manager,
+                                         const char* failed_core_id)
+{
+    if (!failed_core_id || failed_core_id[0] == '\0')
+        return false;
+
+    ConnectionTable ct = ct_manager.snapshot();
+    if (ct.active_core_id[0] == '\0')
+        return true;
+
+    return std::strncmp(ct.active_core_id, failed_core_id, UUID_LEN) == 0;
+}
+
+inline bool is_backup_core_will(const ConnectionTableManager& ct_manager,
+                                const char* failed_core_id)
+{
+    if (!failed_core_id || failed_core_id[0] == '\0')
+        return false;
+
+    ConnectionTable ct = ct_manager.snapshot();
+    if (ct.backup_core_id[0] == '\0')
+        return false;
+
+    return std::strncmp(ct.backup_core_id, failed_core_id, UUID_LEN) == 0;
+}
