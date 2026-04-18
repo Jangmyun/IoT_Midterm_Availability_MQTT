@@ -58,6 +58,9 @@ bool ConnectionTableManager::setNodeStatus(const char* id, NodeStatus status) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (int i = 0; i < table_.node_count; i++) {
         if (std::strncmp(table_.nodes[i].id, id, UUID_LEN) == 0) {
+            if (table_.nodes[i].status == status) {
+                return false;
+            }
             table_.nodes[i].status = status;
             bumpVersion();
             return true;
@@ -130,6 +133,9 @@ std::optional<LinkEntry> ConnectionTableManager::findLink(const char* from_id, c
 
 void ConnectionTableManager::setActiveCoreId(const char* id) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (std::strncmp(table_.active_core_id, id, UUID_LEN) == 0) {
+        return;
+    }
     std::strncpy(table_.active_core_id, id, UUID_LEN - 1);
     table_.active_core_id[UUID_LEN - 1] = '\0';
     bumpVersion();
@@ -137,6 +143,9 @@ void ConnectionTableManager::setActiveCoreId(const char* id) {
 
 void ConnectionTableManager::setBackupCoreId(const char* id) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (std::strncmp(table_.backup_core_id, id, UUID_LEN) == 0) {
+        return;
+    }
     std::strncpy(table_.backup_core_id, id, UUID_LEN - 1);
     table_.backup_core_id[UUID_LEN - 1] = '\0';
     bumpVersion();

@@ -104,6 +104,14 @@ static void publish_active_view(struct mosquitto* mosq, CoreContext* ctx) {
     publish_ct_sync(mosq, ctx);
 }
 
+static void stop_peer_channel_after_promotion(CoreContext* ctx) {
+    if (!ctx || !ctx->mosq_peer) {
+        return;
+    }
+
+    mosquitto_disconnect(ctx->mosq_peer);
+}
+
 // Backup: TOPIC_NODE_REGISTER publish → Active 수신
 static void publish_node_register(CoreContext* ctx) {
     if (!ctx->mosq_peer) return;
@@ -234,10 +242,12 @@ static void on_message(struct mosquitto* mosq, void* userdata,
         node.status = NODE_STATUS_ONLINE;
         node.hop_to_core = 1;
 
+        bool changed = mark_duplicate_endpoint_nodes_offline(
+            *ctx->ct_manager, node.id, node.ip, node.port);
         auto existing = ctx->ct_manager->findNode(reg.source.id);
         if (existing && existing->status == NODE_STATUS_OFFLINE) {
             // Node 복구: OFFLINE → ONLINE (FR-13, A-02)
-            bool changed = ctx->ct_manager->setNodeStatus(reg.source.id, NODE_STATUS_ONLINE);
+            changed = ctx->ct_manager->updateNode(node) || changed;
             changed = ensure_link(ctx->ct_manager, ctx->core_id, reg.source.id) || changed;
             if (changed) {
                 on_ct_changed(mosq, ctx);
@@ -253,15 +263,21 @@ static void on_message(struct mosquitto* mosq, void* userdata,
             printf("[core] node recovered: %s  (ct.version=%d)\n", reg.source.id, ct.version);
         }
         else if (!existing) {
-            bool changed = ctx->ct_manager->addNode(node);
+            changed = ctx->ct_manager->addNode(node) || changed;
             changed = ensure_link(ctx->ct_manager, ctx->core_id, reg.source.id) || changed;
             if (changed) {
                 on_ct_changed(mosq, ctx);
             }
             printf("[core] edge registered: %s  %s:%d\n", node.id, node_ip, node_port);
         }
-        else if (ensure_link(ctx->ct_manager, ctx->core_id, reg.source.id)) {
-            on_ct_changed(mosq, ctx);
+        else {
+            if (!same_node_entry(*existing, node)) {
+                changed = ctx->ct_manager->updateNode(node) || changed;
+            }
+            changed = ensure_link(ctx->ct_manager, ctx->core_id, reg.source.id) || changed;
+            if (changed) {
+                on_ct_changed(mosq, ctx);
+            }
         }
         // else: already ONLINE, ignore duplicate
         return;
@@ -384,13 +400,18 @@ static void on_connect_peer(struct mosquitto* mosq, void* userdata, int rc) {
     }
     printf("[core/backup] connected to active broker\n");
 
+    auto* ctx = static_cast<CoreContext*>(userdata);
+    if (!ctx->is_backup) {
+        mosquitto_disconnect(mosq);
+        return;
+    }
+
     // Active의 CT + LWT + Election 구독
     mosquitto_subscribe(mosq, nullptr, TOPIC_CT_SYNC, 1);
     mosquitto_subscribe(mosq, nullptr, TOPIC_CORE_WILL_ALL, 1);
     mosquitto_subscribe(mosq, nullptr, TOPIC_ELECTION_ALL, 1);
 
     // Backup 자신의 노드 정보 전송 → Active가 merge
-    auto* ctx = static_cast<CoreContext*>(userdata);
     publish_node_register(ctx);
 }
 
@@ -402,6 +423,10 @@ static void on_disconnect_peer(struct mosquitto* /*mosq*/, void* /*userdata*/, i
 static void on_message_peer(struct mosquitto* mosq, void* userdata,
     const struct mosquitto_message* msg) {
     auto* ctx = static_cast<CoreContext*>(userdata);
+
+    if (!ctx->is_backup) {
+        return;
+    }
 
     // Active의 CT 수신 → merge → Backup의 own broker에 TOPOLOGY publish
     if (strcmp(msg->topic, TOPIC_CT_SYNC) == 0) {
@@ -467,6 +492,7 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
         mosquitto_publish(mosq, nullptr, "campus/alert/core_switch",
             (int)sw_json.size(), sw_json.c_str(), 1, false);
 
+        stop_peer_channel_after_promotion(ctx);
         printf("[core/backup] core_switch sent: %s:%d\n", ctx->core_ip, ctx->core_port);
         return;
     }
@@ -533,6 +559,7 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
 
                 ctx->election_votes = 0;
                 ctx->election_voters.clear();
+                stop_peer_channel_after_promotion(ctx);
                 printf("[core/backup] elected as ACTIVE via peer election, core_switch sent\n");
             }
         }

@@ -119,6 +119,39 @@ inline bool merge_backup_registration(ConnectionTableManager& local,
     return changed;
 }
 
+inline bool mark_duplicate_endpoint_nodes_offline(ConnectionTableManager& ct_manager,
+                                                  const char* registered_node_id,
+                                                  const char* node_ip,
+                                                  uint16_t node_port) {
+    if (!registered_node_id || registered_node_id[0] == '\0' ||
+        !node_ip || node_ip[0] == '\0' || node_port == 0) {
+        return false;
+    }
+
+    bool changed = false;
+    ConnectionTable snapshot = ct_manager.snapshot();
+
+    for (int i = 0; i < snapshot.node_count; i++) {
+        const NodeEntry& node = snapshot.nodes[i];
+        if (node.role != NODE_ROLE_NODE) {
+            continue;
+        }
+        if (std::strncmp(node.id, registered_node_id, UUID_LEN) == 0) {
+            continue;
+        }
+        if (std::strncmp(node.ip, node_ip, IP_LEN) != 0 || node.port != node_port) {
+            continue;
+        }
+        if (node.status == NODE_STATUS_OFFLINE) {
+            continue;
+        }
+
+        changed = ct_manager.setNodeStatus(node.id, NODE_STATUS_OFFLINE) || changed;
+    }
+
+    return changed;
+}
+
 inline bool promote_core_after_failover(ConnectionTableManager& ct_manager,
                                         const char* promoted_core_id,
                                         const char* failed_core_id) {

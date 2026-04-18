@@ -532,6 +532,66 @@ static void tc_should_promote_backup_without_active_snapshot() {
     end_test("TC-14: should_promote_backup_on_core_will — active 미확정 시 보수적 허용");
 }
 
+// ── TC-15: duplicate endpoint registration — 이전 online row를 offline 처리 ─
+
+static void tc_duplicate_endpoint_registration_marks_old_row_offline() {
+    begin_test("TC-15: duplicate endpoint registration — 이전 online row를 offline 처리");
+
+    ConnectionTableManager ct;
+    ct.init(CORE_A, "");
+
+    NodeEntry old_edge = {};
+    std::strncpy(old_edge.id, NODE_1, UUID_LEN - 1);
+    old_edge.role = NODE_ROLE_NODE;
+    std::strncpy(old_edge.ip, "192.168.0.9", IP_LEN - 1);
+    old_edge.port = 1883;
+    old_edge.status = NODE_STATUS_ONLINE;
+    old_edge.hop_to_core = 1;
+    CHECK_TRUE(ct.addNode(old_edge));
+
+    CHECK_TRUE(mark_duplicate_endpoint_nodes_offline(
+        ct,
+        "ffffffff-0000-0000-0000-000000000010",
+        "192.168.0.9",
+        1883));
+
+    auto old_edge_after = ct.findNode(NODE_1);
+    CHECK_TRUE(old_edge_after.has_value());
+    CHECK_EQ(old_edge_after->status, NODE_STATUS_OFFLINE);
+
+    CHECK_FALSE(mark_duplicate_endpoint_nodes_offline(
+        ct,
+        "ffffffff-0000-0000-0000-000000000010",
+        "192.168.0.9",
+        1883));
+
+    end_test("TC-15: duplicate endpoint registration — 이전 online row를 offline 처리");
+}
+
+// ── TC-16: setNodeStatus — 동일 상태 재적용은 no-op ────────────────────────
+
+static void tc_set_node_status_is_idempotent() {
+    begin_test("TC-16: setNodeStatus — 동일 상태 재적용은 no-op");
+
+    ConnectionTableManager ct;
+    ct.init("", "");
+
+    NodeEntry edge = {};
+    std::strncpy(edge.id, NODE_1, UUID_LEN - 1);
+    edge.role = NODE_ROLE_NODE;
+    edge.status = NODE_STATUS_OFFLINE;
+    CHECK_TRUE(ct.addNode(edge));
+
+    int version_before = ct.snapshot().version;
+    CHECK_FALSE(ct.setNodeStatus(NODE_1, NODE_STATUS_OFFLINE));
+    CHECK_EQ(ct.snapshot().version, version_before);
+
+    CHECK_TRUE(ct.setNodeStatus(NODE_1, NODE_STATUS_ONLINE));
+    CHECK_EQ(ct.findNode(NODE_1)->status, NODE_STATUS_ONLINE);
+
+    end_test("TC-16: setNodeStatus — 동일 상태 재적용은 no-op");
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -549,6 +609,8 @@ int main() {
     tc_promote_core_after_failover_marks_failed_active_offline();
     tc_should_promote_backup_on_active_only();
     tc_should_promote_backup_without_active_snapshot();
+    tc_duplicate_endpoint_registration_marks_old_row_offline();
+    tc_set_node_status_is_idempotent();
 
     printf("══════════════════════════════════════\n");
     printf("  결과: %d passed, %d failed\n", g_pass, g_fail);

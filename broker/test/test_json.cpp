@@ -211,6 +211,36 @@ static void test_ct_invalid_json() {
     end_test(name);
 }
 
+static void test_ct_parse_clears_stale_bytes() {
+    const char* name = "CT: parse clears stale bytes and null-terminates strings";
+    begin_test(name);
+
+    const std::string raw =
+        "{"
+          "\"version\":7,"
+          "\"last_update\":\"2026-04-18T08:00:00Z\","
+          "\"active_core_id\":\"" CORE_A "\","
+          "\"backup_core_id\":\"" CORE_B "\","
+          "\"nodes\":["
+            "{\"id\":\"" NODE_1 "\",\"role\":\"NODE\",\"ip\":\"192.168.0.9\",\"port\":1883,\"status\":\"ONLINE\",\"hop_to_core\":1}"
+          "],"
+          "\"links\":["
+            "{\"from_id\":\"" CORE_A "\",\"to_id\":\"" NODE_1 "\",\"rtt_ms\":1.0}"
+          "]"
+        "}";
+
+    ConnectionTable ct;
+    std::memset(&ct, 'X', sizeof(ct));
+    CHECK_TRUE(connection_table_from_json(raw, ct));
+    CHECK_STREQ(ct.nodes[0].id, NODE_1);
+    CHECK_STREQ(ct.nodes[0].ip, "192.168.0.9");
+    CHECK_EQ(ct.nodes[0].id[UUID_LEN - 1], '\0');
+    CHECK_EQ(ct.nodes[0].ip[IP_LEN - 1], '\0');
+    CHECK_EQ(ct.links[0].to_id[UUID_LEN - 1], '\0');
+
+    end_test(name);
+}
+
 // ── MqttMessage 테스트 ────────────────────────────────────────────────────────
 
 static void test_msg_intrusion_roundtrip() {
@@ -388,6 +418,44 @@ static void test_msg_invalid_json() {
     end_test(name);
 }
 
+static void test_msg_parse_clears_stale_bytes() {
+    const char* name = "MqttMessage: parse clears stale bytes and null-terminates strings";
+    begin_test(name);
+
+    const std::string raw =
+        "{"
+          "\"msg_id\":\"" MSG_EVT "\","
+          "\"type\":\"STATUS\","
+          "\"timestamp\":\"2026-04-18T08:10:00Z\","
+          "\"source\":{\"role\":\"NODE\",\"id\":\"" NODE_1 "\"},"
+          "\"target\":{\"role\":\"CORE\",\"id\":\"" CORE_A "\"},"
+          "\"route\":{"
+            "\"original_node\":\"" NODE_1 "\","
+            "\"prev_hop\":\"" NODE_1 "\","
+            "\"next_hop\":\"" CORE_A "\","
+            "\"hop_count\":1,\"ttl\":5"
+          "},"
+          "\"delivery\":{\"qos\":1,\"dup\":false,\"retain\":false},"
+          "\"payload\":{"
+            "\"building_id\":\"bldg-a\","
+            "\"camera_id\":\"cam-01\","
+            "\"description\":\"192.168.0.9:1883\""
+          "}"
+        "}";
+
+    MqttMessage msg;
+    std::memset(&msg, 'Y', sizeof(msg));
+    CHECK_TRUE(mqtt_message_from_json(raw, msg));
+    CHECK_STREQ(msg.source.id, NODE_1);
+    CHECK_STREQ(msg.target.id, CORE_A);
+    CHECK_STREQ(msg.payload.description, "192.168.0.9:1883");
+    CHECK_EQ(msg.source.id[UUID_LEN - 1], '\0');
+    CHECK_EQ(msg.target.id[UUID_LEN - 1], '\0');
+    CHECK_EQ(msg.payload.description[DESCRIPTION_LEN - 1], '\0');
+
+    end_test(name);
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -400,6 +468,7 @@ int main() {
     test_ct_from_testpub_json();
     test_ct_offline_node();
     test_ct_invalid_json();
+    test_ct_parse_clears_stale_bytes();
 
     printf("── MqttMessage ─────────────────────────────────────\n\n");
     test_msg_intrusion_roundtrip();
@@ -407,6 +476,7 @@ int main() {
     test_msg_lwt_core_roundtrip();
     test_msg_from_testpub_json();
     test_msg_invalid_json();
+    test_msg_parse_clears_stale_bytes();
 
     printf("════════════════════════════════════════════════════\n");
     printf(" PASS: %d  /  FAIL: %d\n", g_pass, g_fail);
