@@ -295,8 +295,8 @@ static void on_message(struct mosquitto* mosq, void* userdata,
 
             // 과반 달성 (2-core 환경에서는 1표면 충분)
             if (ctx->election_votes >= 1) {
-                ctx->ct_manager->setActiveCoreId(ctx->core_id);
-                ctx->ct_manager->setBackupCoreId("");
+                ConnectionTable snapshot = ctx->ct_manager->snapshot();
+                promote_core_after_failover(*ctx->ct_manager, ctx->core_id, snapshot.active_core_id);
                 on_ct_changed(mosq, ctx);
 
                 // core_switch 발행 → Edge들이 수신하여 새 Active Core로 전환
@@ -385,8 +385,7 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
     if (strncmp(msg->topic, "campus/will/core/", 17) == 0) {
         printf("[core/backup] active core down: %s — promoting self\n", msg->topic + 17);
 
-        ctx->ct_manager->setActiveCoreId(ctx->core_id);
-        ctx->ct_manager->setBackupCoreId("");
+        promote_core_after_failover(*ctx->ct_manager, ctx->core_id, msg->topic + 17);
         ctx->is_backup = false;
 
         publish_active_view(ctx->mosq_self, ctx);
@@ -452,8 +451,8 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
                 ctx->election_votes);
 
             if (ctx->election_votes >= 1) {
-                ctx->ct_manager->setActiveCoreId(ctx->core_id);
-                ctx->ct_manager->setBackupCoreId("");
+                ConnectionTable snapshot = ctx->ct_manager->snapshot();
+                promote_core_after_failover(*ctx->ct_manager, ctx->core_id, snapshot.active_core_id);
                 ctx->is_backup = false;
                 // 자신 브로커 topology 갱신
                 publish_active_view(ctx->mosq_self, ctx);

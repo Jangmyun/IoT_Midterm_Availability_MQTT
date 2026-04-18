@@ -35,10 +35,16 @@ cmake --build broker/build
 bash demo/presentation-hm-rpi1.sh active-core
 ```
 
-라즈베리 1 (`192.168.0.8`) 에서 Backup Core 실행:
+라즈베리 1 (`192.168.0.8` 기본값) 에서 Backup Core 실행:
 
 ```bash
 bash demo/presentation-hm-rpi1.sh backup-core
+```
+
+라즈베리 1이 현재 다른 IP를 쓰고 있으면, 그 IP를 직접 넘긴다:
+
+```bash
+bash demo/presentation-hm-rpi1.sh backup-core 192.168.0.23
 ```
 
 현재 고정 토폴로지 확인:
@@ -104,8 +110,16 @@ cd /Users/hyeokkiyaa/Drive/HGU/4th/1st/IoT/MidTermProject/IoT_Midterm_Availabili
 bash demo/presentation-hm-rpi1.sh backup-core
 ```
 
+라즈베리 1 IP가 변한 경우:
+
+```bash
+cd /Users/hyeokkiyaa/Drive/HGU/4th/1st/IoT/MidTermProject/IoT_Midterm_Availability_MQTT
+bash demo/presentation-hm-rpi1.sh backup-core <actual_rpi_ip>
+```
+
 ## 주의
 
 - 이 스크립트는 `core_broker` / `edge_broker` 실행 역할을 고정해주는 용도다.
 - `mosquitto` 서비스 자체를 자동으로 띄우지는 않는다.
-- 현재 고정 IP는 스크립트에 박혀 있으므로 IP가 바뀌면 [`demo/presentation-hm-rpi1.sh`](/Users/hyeokkiyaa/Drive/HGU/4th/1st/IoT/MidTermProject/IoT_Midterm_Availability_MQTT/demo/presentation-hm-rpi1.sh:1) 상단 값을 수정해야 한다.
+- Active Core 주소는 스크립트 기본값 `192.168.0.7:1883` 을 사용한다.
+- Backup Core는 기본값 `192.168.0.8:1883` 을 사용하지만, 장비 IP가 바뀌면 실행 인자로 직접 덮어쓸 수 있다.

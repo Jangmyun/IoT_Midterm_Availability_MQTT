@@ -160,9 +160,13 @@ export default function TopologyGraph({ topology, onNodeClick }) {
       return;
     }
 
+    const visibleNodes = topology.nodes.filter((node) => {
+      return !(node.role === 'CORE' && node.status === 'OFFLINE');
+    });
+
     const elements = [];
 
-    for (const n of topology.nodes) {
+    for (const n of visibleNodes) {
       const rawId = String(n.id ?? '');
       elements.push({
         group: 'nodes',
@@ -175,7 +179,7 @@ export default function TopologyGraph({ topology, onNodeClick }) {
       });
     }
 
-    const nodeIdSet = new Set(topology.nodes.map((n) => String(n.id ?? '')));
+    const nodeIdSet = new Set(visibleNodes.map((n) => String(n.id ?? '')));
 
     for (const l of topology.links) {
       const fromId = String(l.from_id ?? '');
@@ -204,7 +208,7 @@ export default function TopologyGraph({ topology, onNodeClick }) {
       cy.add(elements);
     });
 
-    const nodeCount = topology.nodes.length;
+    const nodeCount = visibleNodes.length;
 
     // 작은 토폴로지는 concentric이 가장 안정적으로 "가운데" 잘 잡힘
     // 큰 토폴로지는 cose로 자연스럽게 퍼뜨림

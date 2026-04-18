@@ -14,6 +14,12 @@ const EVENT_TYPE_COLOR = {
   RELAY:        'badge--gray',
 };
 
+function reconnectReasonLabel(reason) {
+  if (reason === 'W-01') return 'LWT';
+  if (reason === 'M-04') return 'topology sync';
+  return 'core_switch';
+}
+
 // nodes를 CORE 우선 → ONLINE → OFFLINE 순으로 정렬
 function sortNodes(nodes) {
   return [...nodes].sort((a, b) => {
@@ -95,7 +101,7 @@ export default function App() {
         <div className="reconnect-banner">
           <span className="reconnect-spinner" />
           <span>
-            Core failover ({reconnectInfo.reason === 'W-01' ? 'LWT' : 'core_switch'})
+            Core failover ({reconnectReasonLabel(reconnectInfo.reason)})
             &nbsp;— connecting to backup at <code>{reconnectInfo.url}</code>
           </span>
         </div>

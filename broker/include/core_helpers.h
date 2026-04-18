@@ -24,9 +24,18 @@ inline void make_alert_topic(const char* prefix, const char* id, char* buf, size
 
 // Merge remote ConnectionTable into local ConnectionTableManager.
 // - Nodes in remote not present in local → addNode
-// - Nodes in both: prefer ONLINE over OFFLINE
+// - Nodes in both: newer CT snapshot should replace the local node row
 // - Links: upsert via addLink (rtt updated if exists)
 // Returns true if local CT was modified.
+inline bool same_node_entry(const NodeEntry& left, const NodeEntry& right) {
+    return std::strncmp(left.id, right.id, UUID_LEN) == 0 &&
+           left.role == right.role &&
+           std::strncmp(left.ip, right.ip, IP_LEN) == 0 &&
+           left.port == right.port &&
+           left.status == right.status &&
+           left.hop_to_core == right.hop_to_core;
+}
+
 inline bool merge_connection_tables(ConnectionTableManager& local,
                                     const ConnectionTable& remote) {
     bool changed = false;
@@ -36,8 +45,7 @@ inline bool merge_connection_tables(ConnectionTableManager& local,
         if (!existing.has_value()) {
             local.addNode(rn);
             changed = true;
-        } else if (rn.status == NODE_STATUS_ONLINE &&
-                   existing->status == NODE_STATUS_OFFLINE) {
+        } else if (!same_node_entry(*existing, rn)) {
             local.updateNode(rn);
             changed = true;
         }
@@ -79,6 +87,35 @@ inline bool merge_backup_registration(ConnectionTableManager& local,
     }
 
     if (merge_connection_tables(local, remote)) {
+        changed = true;
+    }
+
+    return changed;
+}
+
+inline bool promote_core_after_failover(ConnectionTableManager& ct_manager,
+                                        const char* promoted_core_id,
+                                        const char* failed_core_id) {
+    bool changed = false;
+
+    if (failed_core_id && failed_core_id[0] != '\0' &&
+        std::strncmp(failed_core_id, promoted_core_id, UUID_LEN) != 0) {
+        auto failed_node = ct_manager.findNode(failed_core_id);
+        if (failed_node.has_value() && failed_node->status != NODE_STATUS_OFFLINE) {
+            changed = ct_manager.setNodeStatus(failed_core_id, NODE_STATUS_OFFLINE) || changed;
+        }
+    }
+
+    ConnectionTable snapshot = ct_manager.snapshot();
+
+    if (promoted_core_id && promoted_core_id[0] != '\0' &&
+        std::strncmp(snapshot.active_core_id, promoted_core_id, UUID_LEN) != 0) {
+        ct_manager.setActiveCoreId(promoted_core_id);
+        changed = true;
+    }
+
+    if (snapshot.backup_core_id[0] != '\0') {
+        ct_manager.setBackupCoreId("");
         changed = true;
     }
 

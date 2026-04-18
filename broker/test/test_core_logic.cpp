@@ -257,10 +257,10 @@ static void tc_merge_disjoint() {
     end_test("TC-07: merge_connection_tables — 비겹침 노드");
 }
 
-// ── TC-08: merge_connection_tables — ONLINE 우선 ──────────────────────────────
+// ── TC-08: merge_connection_tables — 최신 snapshot 반영 ──────────────────────
 
-static void tc_merge_online_wins() {
-    begin_test("TC-08: merge_connection_tables — ONLINE 우선");
+static void tc_merge_latest_snapshot_wins() {
+    begin_test("TC-08: merge_connection_tables — 최신 snapshot 반영");
 
     // Local: node-1 OFFLINE
     ConnectionTableManager local;
@@ -292,22 +292,26 @@ static void tc_merge_online_wins() {
     CHECK_TRUE(result.has_value());
     CHECK_EQ(result->status, NODE_STATUS_ONLINE);
 
-    // 역방향: Remote OFFLINE, Local ONLINE → local 유지 (변경 없음)
+    // 역방향: Remote OFFLINE, Local ONLINE → remote snapshot을 반영
     ConnectionTable remote2 = {};
     {
         NodeEntry n = {};
         strncpy(n.id, NODE_1, UUID_LEN - 1);
+        n.role = NODE_ROLE_NODE;
+        strncpy(n.ip, "10.0.0.1", IP_LEN - 1);
+        n.port = 1883;
         n.status = NODE_STATUS_OFFLINE;
+        n.hop_to_core = 1;
         remote2.nodes[remote2.node_count++] = n;
     }
     bool changed2 = merge_connection_tables(local, remote2);
-    CHECK_FALSE(changed2);  // OFFLINE이 ONLINE을 덮지 않음
+    CHECK_TRUE(changed2);
 
     auto result2 = local.findNode(NODE_1);
     CHECK_TRUE(result2.has_value());
-    CHECK_EQ(result2->status, NODE_STATUS_ONLINE);  // 여전히 ONLINE
+    CHECK_EQ(result2->status, NODE_STATUS_OFFLINE);
 
-    end_test("TC-08: merge_connection_tables — ONLINE 우선");
+    end_test("TC-08: merge_connection_tables — 최신 snapshot 반영");
 }
 
 // ── TC-09: addLink — identical input is idempotent ──────────────────────────
@@ -382,6 +386,49 @@ static void tc_merge_backup_registration_equal_version() {
     end_test("TC-10: merge_backup_registration — equal version bootstrap merge");
 }
 
+// ── TC-11: promote_core_after_failover — 이전 active OFFLINE 처리 ───────────
+
+static void tc_promote_core_after_failover_marks_failed_active_offline() {
+    begin_test("TC-11: promote_core_after_failover — 이전 active OFFLINE 처리");
+
+    ConnectionTableManager ct;
+    ct.init(CORE_A, CORE_B);
+
+    NodeEntry active = {};
+    std::strncpy(active.id, CORE_A, UUID_LEN - 1);
+    active.role = NODE_ROLE_CORE;
+    std::strncpy(active.ip, "192.168.0.7", IP_LEN - 1);
+    active.port = 1883;
+    active.status = NODE_STATUS_ONLINE;
+    active.hop_to_core = 0;
+    CHECK_TRUE(ct.addNode(active));
+
+    NodeEntry backup = {};
+    std::strncpy(backup.id, CORE_B, UUID_LEN - 1);
+    backup.role = NODE_ROLE_CORE;
+    std::strncpy(backup.ip, "192.168.0.16", IP_LEN - 1);
+    backup.port = 1883;
+    backup.status = NODE_STATUS_ONLINE;
+    backup.hop_to_core = 1;
+    CHECK_TRUE(ct.addNode(backup));
+
+    CHECK_TRUE(promote_core_after_failover(ct, CORE_B, CORE_A));
+
+    ConnectionTable snapshot = ct.snapshot();
+    CHECK_STREQ(snapshot.active_core_id, CORE_B);
+    CHECK_STREQ(snapshot.backup_core_id, "");
+    CHECK_EQ(snapshot.node_count, 2);
+
+    auto failedActive = ct.findNode(CORE_A);
+    auto promotedCore = ct.findNode(CORE_B);
+    CHECK_TRUE(failedActive.has_value());
+    CHECK_TRUE(promotedCore.has_value());
+    CHECK_EQ(failedActive->status, NODE_STATUS_OFFLINE);
+    CHECK_EQ(promotedCore->status, NODE_STATUS_ONLINE);
+
+    end_test("TC-11: promote_core_after_failover — 이전 active OFFLINE 처리");
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -392,9 +439,10 @@ int main() {
     tc_dedup_cap();
     tc_edge_registration_roundtrip();
     tc_merge_disjoint();
-    tc_merge_online_wins();
+    tc_merge_latest_snapshot_wins();
     tc_add_link_idempotent();
     tc_merge_backup_registration_equal_version();
+    tc_promote_core_after_failover_marks_failed_active_offline();
 
     printf("══════════════════════════════════════\n");
     printf("  결과: %d passed, %d failed\n", g_pass, g_fail);

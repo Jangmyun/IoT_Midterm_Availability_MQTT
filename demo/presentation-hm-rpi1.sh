@@ -27,8 +27,8 @@ usage() {
   cat <<EOF
 Usage:
   ./demo/presentation-hm-rpi1.sh show
-  ./demo/presentation-hm-rpi1.sh active-core
-  ./demo/presentation-hm-rpi1.sh backup-core
+  ./demo/presentation-hm-rpi1.sh active-core [self_host] [self_port]
+  ./demo/presentation-hm-rpi1.sh backup-core [self_host] [self_port]
   ./demo/presentation-hm-rpi1.sh active-sub
   ./demo/presentation-hm-rpi1.sh backup-sub
   ./demo/presentation-hm-rpi1.sh edge <local_host> <local_port>
@@ -43,6 +43,9 @@ Examples:
 
   # On Raspberry Pi 1 (192.168.0.8)
   ./demo/presentation-hm-rpi1.sh backup-core
+
+  # If Raspberry Pi 1 currently uses another IP
+  ./demo/presentation-hm-rpi1.sh backup-core 192.168.0.23
 
   # On any edge node
   ./demo/presentation-hm-rpi1.sh edge 192.168.0.9 2883
@@ -90,8 +93,9 @@ One-command startup
   Mac ($ACTIVE_HOST):
     ./demo/presentation-hm-rpi1.sh active-core
 
-  Raspberry Pi 1 ($BACKUP_HOST):
+  Raspberry Pi 1 ($BACKUP_HOST by default):
     ./demo/presentation-hm-rpi1.sh backup-core
+    ./demo/presentation-hm-rpi1.sh backup-core <actual_rpi_ip>
 
 Typical edge command
   ./demo/presentation-hm-rpi1.sh edge <local_host> <local_port>
@@ -99,18 +103,22 @@ EOF
 }
 
 run_active_core() {
-  assert_current_host_matches "$ACTIVE_HOST"
+  local self_host="${1:-$ACTIVE_HOST}"
+  local self_port="${2:-$ACTIVE_PORT}"
+  assert_current_host_matches "$self_host"
   require_binary "$BUILD_DIR/core_broker"
-  info "starting active core at $ACTIVE_HOST:$ACTIVE_PORT"
-  exec "$BUILD_DIR/core_broker" "$ACTIVE_HOST" "$ACTIVE_PORT"
+  info "starting active core at $self_host:$self_port"
+  exec "$BUILD_DIR/core_broker" "$self_host" "$self_port"
 }
 
 run_backup_core() {
-  assert_current_host_matches "$BACKUP_HOST"
+  local self_host="${1:-$BACKUP_HOST}"
+  local self_port="${2:-$BACKUP_PORT}"
+  assert_current_host_matches "$self_host"
   require_binary "$BUILD_DIR/core_broker"
-  info "starting backup core at $BACKUP_HOST:$BACKUP_PORT (peer=$ACTIVE_HOST:$ACTIVE_PORT)"
+  info "starting backup core at $self_host:$self_port (peer=$ACTIVE_HOST:$ACTIVE_PORT)"
   exec "$BUILD_DIR/core_broker" \
-    "$BACKUP_HOST" "$BACKUP_PORT" \
+    "$self_host" "$self_port" \
     "$ACTIVE_HOST" "$ACTIVE_PORT"
 }
 
@@ -145,10 +153,10 @@ case "${1:-show}" in
     show_topology
     ;;
   active-core)
-    run_active_core
+    run_active_core "${2:-}" "${3:-}"
     ;;
   backup-core)
-    run_backup_core
+    run_backup_core "${2:-}" "${3:-}"
     ;;
   active-sub)
     run_active_sub
