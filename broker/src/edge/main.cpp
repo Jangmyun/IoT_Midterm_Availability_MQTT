@@ -748,6 +748,10 @@ static void on_connect_backup(struct mosquitto* mosq, void* userdata, int rc)
     ctx->backup_connected = true;
     std::printf("[edge] connected to backup core\n");
 
+    // standby backup도 edge의 최신 ONLINE 상태는 알아야 한다.
+    // 다만 backup 연결은 control/LWT source가 아니라 status warm-standby 경로로만 사용한다.
+    publish_edge_status(ctx->mosq_backup, ctx, "backup core");
+
     // backup이 살아났으면 저장된 메시지 재전송 시도
     flush_store_queue(ctx);
 }
