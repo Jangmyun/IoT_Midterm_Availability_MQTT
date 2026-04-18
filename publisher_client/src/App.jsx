@@ -3,12 +3,13 @@ import { usePublisher } from './hooks/usePublisher.js';
 import { CameraView }   from './components/CameraView.jsx';
 import { EventLog }     from './components/EventLog.jsx';
 import { MSG_TYPES }    from './mqtt/message.js';
+import { generateUuid } from './utils/uuid.js';
 import './App.css';
 
 const DEFAULT_URL      = 'ws://localhost:9001';
 const DEFAULT_BUILDING = 'building-a';
 const DEFAULT_CAMERA   = 'cam-01';
-const PUBLISHER_ID     = crypto.randomUUID();
+const PUBLISHER_ID     = generateUuid();
 const MOTION_COOLDOWN  = 3000; // 모션 이벤트 최소 간격 (ms)
 
 const STATUS_LABEL = {
@@ -19,7 +20,15 @@ const STATUS_LABEL = {
 };
 
 export default function App() {
-  const { status, events, connect, disconnect, publish } = usePublisher();
+  const {
+    status,
+    events,
+    activeBrokerUrl,
+    queueSize,
+    connect,
+    disconnect,
+    publish,
+  } = usePublisher();
 
   const [urlInput,    setUrlInput]    = useState(DEFAULT_URL);
   const [buildingId,  setBuildingId]  = useState(DEFAULT_BUILDING);
@@ -73,12 +82,12 @@ export default function App() {
         <section className="card">
           <h2 className="card__title">연결 설정</h2>
           <div className="field-row">
-            <label className="field-label">Edge WebSocket URL</label>
+            <label className="field-label">Broker WebSocket URL(s)</label>
             <input
               className="field-input"
               value={urlInput}
               onChange={e => setUrlInput(e.target.value)}
-              placeholder="ws://192.168.x.x:9001"
+              placeholder="ws://192.168.0.9:9001, ws://192.168.0.16:9001, ws://192.168.0.7:9001"
               disabled={isConnected}
             />
           </div>
@@ -102,6 +111,16 @@ export default function App() {
           </div>
           <div className="field-row field-row--hint">
             <span className="hint">Publisher ID: {PUBLISHER_ID.slice(0, 8)}…</span>
+          </div>
+          <div className="field-row field-row--hint">
+            <span className="hint">
+              Active broker: {activeBrokerUrl || '—'}
+            </span>
+          </div>
+          <div className="field-row field-row--hint">
+            <span className="hint">
+              Queued events: {queueSize}
+            </span>
           </div>
           <button
             className={`btn btn--block ${isConnected ? 'btn--ghost' : 'btn--primary'}`}

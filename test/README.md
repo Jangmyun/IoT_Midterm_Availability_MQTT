@@ -84,6 +84,7 @@ NODE_1_IP=192.168.0.51 NODE_2_IP=192.168.0.52 \
 | --- | --- | --- | --- |
 | CORE-01 | `core/01_bootstrap.sh` | 5.1, 5.3 | core 연결 + 토폴로지 publish + edge 등록 확인 |
 | CORE-02 | `core/02_lwt.sh` | 5.4, FR-04 | core 강제 종료 → LWT에 backup 엔드포인트 포함 여부 확인 |
+| CORE-10 | `core/10_event_e2e.sh` | FR-03 | 이벤트 publish → core 재발행 → subscriber에서 동일 msg_id 2회(original + forwarded) 확인 |
 
 ```bash
 BUILD_DIR=./broker/build ./test/test_pub.sh core_bootstrap
@@ -100,6 +101,8 @@ BUILD_DIR=./broker/build ./test/test_pub.sh core_lwt
 | --- | --- | --- | --- |
 | EDGE-01 | `edge/01_ping_pong.sh` | 5.6, M-01, M-02 | PING_REQ publish → edge PONG 응답 수신 확인 |
 | EDGE-02 | `edge/02_lwt.sh` | 5.5, W-02 | edge 강제 종료 → `campus/will/node/<id>` LWT 발행 확인 |
+| EDGE-05 | `edge/05_rtt_relay.sh` | FR-08 | Edge 2대 기동 → Ping/Pong RTT 계산 → relay node 선택 확인 |
+| EDGE-06 | `edge/06_store_and_forward.sh` | FR-07 | upstream broker 단절 중 로컬 이벤트 큐 저장 → broker 복구 후 queued event flush 확인 |
 
 > **참고 (EDGE-02):** LWT 발행은 검증되지만, core 측 `campus/alert/node_down` publish는 미구현 상태입니다.
 
@@ -110,15 +113,12 @@ BUILD_DIR=./broker/build ./test/test_pub.sh edge_lwt
 
 ---
 
-## 미자동화 케이스 (구현 대기)
+## 미자동화/부분 자동화 케이스
 
-`PRD.md` 14.2절 기재 기능. 해당 기능 구현 전에는 자동화 테스트 통과 불가.
+현재 shell에서 직접 다루지 않는 항목은 `PRD.md` 14.2의 미완료 기능과 UI 수동 확인이 필요한 부분입니다.
 
-- `FR-03`: `CCTV → Edge → Core → Client` 엔드-투-엔드 이벤트 전달
-- `FR-05`: `W-01` 수신 후 backup core 페일오버
-- `FR-06`: LWT 수신 후 core의 `campus/alert/node_down/<id>` publish
-- `FR-07`: 재연결 후 store-and-forward 큐 플러시
-- `FR-08`: RTT 측정 및 중계 노드 선택
+- `C-02`: `_core/sync/load_info` 부하 정보 공유
+- `FR-11`: WebSocket 포트 불일치 보완 전, 실제 브라우저 failover 재연결은 별도 수동 확인 필요
 
 ---
 
@@ -135,6 +135,7 @@ BUILD_DIR=./broker/build ./test/test_pub.sh edge_lwt
 | `BUILD_DIR` | `./build` | 통합 테스트용 바이너리 기본 탐색 경로 |
 | `CORE_BINARY`, `EDGE_BINARY` | (없음) | 바이너리 명시 경로 (BUILD_DIR 대신 사용) |
 | `EDGE_NODE_PORT` | `2883` | `edge_broker` 로컬 바인딩 포트 |
+| `STORE_FORWARD_CORE_PORT` | `19883` | `edge/06_store_and_forward.sh`가 임시 upstream broker로 사용할 포트 |
 | `BACKUP_CORE_ID`, `BACKUP_CORE_IP`, `BACKUP_CORE_PORT` | (기본값) | core LWT 테스트용 backup core 정보 |
 
 ## 기타

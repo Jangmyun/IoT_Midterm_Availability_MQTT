@@ -9,6 +9,10 @@
 //   - 중복 메시지 주입(--dup): Core dedup 로직 검증
 //   - 멀티 퍼블리셔(--multi-pub): 다수 Edge 동시 접속 시뮬레이션
 //   - Edge 등록 메시지 전송(--register)
+//   - Connection Table 기반 자동 Failover (Phase 7)
+//     - CT 수신 → Edge 장애 시 RTT+hop_to_core 기반 대체 브로커 자동 선택
+//     - Primary Edge 복구 시 자동 복귀
+//     - 재연결 중 Store-and-Forward 큐
 //   - 종료 시 처리량 요약 출력
 
 #include <cstdio>
@@ -16,6 +20,8 @@
 #include <csignal>
 #include <chrono>
 #include <string>
+#include <deque>
+#include <mutex>
 
 #ifdef _WIN32
 #  include <windows.h>
@@ -28,12 +34,43 @@
 
 #include "publisher_helpers.h"
 #include "mqtt_json.h"
+#include "connection_table_manager.h"
 
 // ── 시그널 처리 ───────────────────────────────────────────────────────────────
 
 static volatile bool g_stop = false;
 
 static void on_signal(int) { g_stop = true; }
+
+// ── Publisher Context ─────────────────────────────────────────────────────────
+
+struct PubContext {
+    PublisherConfig* cfg;
+    struct mosquitto* mosq;
+    ConnectionTableManager ct_manager;
+    int last_ct_version;
+
+    // Primary edge: 최초 연결한 브로커 정보
+    char primary_ip[IP_LEN];
+    int  primary_port;
+    char primary_edge_id[UUID_LEN];  // CT에서 매칭되면 채워짐
+
+    // 현재 연결 중인 브로커 정보
+    char current_ip[IP_LEN];
+    int  current_port;
+    bool connected;
+
+    // failover 상태
+    bool on_fallback;  // 현재 대체 브로커에 연결 중인지
+
+    // store-and-forward queue
+    struct QueuedEvent {
+        char topic[256];
+        std::string json;
+    };
+    std::deque<QueuedEvent> store_queue;
+    std::mutex queue_mutex;
+};
 
 // ── 사용법 출력 ───────────────────────────────────────────────────────────────
 
@@ -95,6 +132,210 @@ static void publish_registration(struct mosquitto* mosq,
     printf("[register] topic=%s\n", topic);
 }
 
+// ── Store-and-Forward ─────────────────────────────────────────────────────────
+
+static void queue_event(PubContext* ctx, const char* topic, const std::string& json)
+{
+    std::lock_guard<std::mutex> lock(ctx->queue_mutex);
+    PubContext::QueuedEvent item;
+    std::strncpy(item.topic, topic, sizeof(item.topic) - 1);
+    item.topic[sizeof(item.topic) - 1] = '\0';
+    item.json = json;
+    ctx->store_queue.push_back(item);
+    printf("[pub_sim] queued event (queue_size=%zu)\n", ctx->store_queue.size());
+}
+
+static void flush_store_queue(PubContext* ctx)
+{
+    std::lock_guard<std::mutex> lock(ctx->queue_mutex);
+    while (!ctx->store_queue.empty())
+    {
+        auto& item = ctx->store_queue.front();
+        int rc = mosquitto_publish(ctx->mosq, nullptr, item.topic,
+                                    (int)item.json.size(), item.json.c_str(),
+                                    ctx->cfg->qos, false);
+        if (rc != MOSQ_ERR_SUCCESS) {
+            printf("[pub_sim] flush failed, keeping %zu events in queue\n",
+                   ctx->store_queue.size());
+            return;
+        }
+        printf("[pub_sim] flushed queued event: topic=%s\n", item.topic);
+        ctx->store_queue.pop_front();
+    }
+}
+
+// ── Failover: CT 기반 대체 브로커 재연결 ──────────────────────────────────────
+
+static void attempt_failover(PubContext* ctx)
+{
+    ConnectionTable ct = ctx->ct_manager.snapshot();
+    if (ct.node_count == 0) {
+        printf("[pub_sim] no CT available, cannot failover\n");
+        return;
+    }
+
+    FallbackBroker fb = select_fallback_broker(ct, ctx->primary_edge_id);
+    if (!fb.found) {
+        printf("[pub_sim] no fallback broker found in CT\n");
+        return;
+    }
+
+    printf("[pub_sim] failover: reconnecting to %s:%d (id=%.8s...)\n",
+           fb.ip, fb.port, fb.id);
+
+    std::strncpy(ctx->current_ip, fb.ip, IP_LEN - 1);
+    ctx->current_port = fb.port;
+    ctx->on_fallback = true;
+
+    mosquitto_disconnect(ctx->mosq);
+    mosquitto_connect_async(ctx->mosq, ctx->current_ip, ctx->current_port, 60);
+}
+
+static void attempt_return_to_primary(PubContext* ctx)
+{
+    if (!ctx->on_fallback) return;
+
+    ConnectionTable ct = ctx->ct_manager.snapshot();
+    if (!should_return_to_primary(ct, ctx->primary_edge_id)) return;
+
+    printf("[pub_sim] primary edge recovered, returning to %s:%d\n",
+           ctx->primary_ip, ctx->primary_port);
+
+    std::strncpy(ctx->current_ip, ctx->primary_ip, IP_LEN - 1);
+    ctx->current_port = ctx->primary_port;
+    ctx->on_fallback = false;
+
+    mosquitto_disconnect(ctx->mosq);
+    mosquitto_connect_async(ctx->mosq, ctx->current_ip, ctx->current_port, 60);
+}
+
+// ── Resolve primary edge ID from CT ───────────────────────────────────────────
+
+static void try_resolve_primary_edge_id(PubContext* ctx, const ConnectionTable& ct)
+{
+    if (ctx->primary_edge_id[0] != '\0') return;  // already resolved
+
+    for (int i = 0; i < ct.node_count; i++)
+    {
+        const NodeEntry& n = ct.nodes[i];
+        if (n.role == NODE_ROLE_NODE &&
+            std::strncmp(n.ip, ctx->primary_ip, IP_LEN) == 0 &&
+            n.port == (uint16_t)ctx->primary_port)
+        {
+            std::strncpy(ctx->primary_edge_id, n.id, UUID_LEN - 1);
+            ctx->primary_edge_id[UUID_LEN - 1] = '\0';
+            printf("[pub_sim] resolved primary edge id: %s\n", ctx->primary_edge_id);
+            return;
+        }
+    }
+}
+
+// ── MQTT Callbacks ────────────────────────────────────────────────────────────
+
+static void on_connect(struct mosquitto* mosq, void* userdata, int rc)
+{
+    auto* ctx = static_cast<PubContext*>(userdata);
+
+    if (rc != 0) {
+        ctx->connected = false;
+        fprintf(stderr, "[pub_sim] connect failed (rc=%d)\n", rc);
+        return;
+    }
+
+    ctx->connected = true;
+    printf("[pub_sim] connected to %s:%d%s\n",
+           ctx->current_ip, ctx->current_port,
+           ctx->on_fallback ? " (fallback)" : " (primary)");
+
+    // CT 구독: 대체 브로커 정보 + primary edge 복구 감지
+    mosquitto_subscribe(mosq, nullptr, TOPIC_TOPOLOGY, 1);
+    // Node LWT 구독: Edge 장애 사전 감지
+    mosquitto_subscribe(mosq, nullptr, "campus/will/node/#", 1);
+    // Core switch 구독: Active Core 변경 감지
+    mosquitto_subscribe(mosq, nullptr, "campus/alert/core_switch", 1);
+
+    // 연결 후 큐 flush
+    flush_store_queue(ctx);
+}
+
+static void on_disconnect(struct mosquitto* /*mosq*/, void* userdata, int rc)
+{
+    auto* ctx = static_cast<PubContext*>(userdata);
+    ctx->connected = false;
+    printf("[pub_sim] disconnected (rc=%d)%s\n", rc,
+           rc != 0 ? " — will attempt failover" : "");
+
+    if (rc != 0) {
+        // 비정상 연결 끊김 → failover 시도
+        attempt_failover(ctx);
+    }
+}
+
+static void on_message(struct mosquitto* /*mosq*/, void* userdata,
+                        const struct mosquitto_message* msg)
+{
+    auto* ctx = static_cast<PubContext*>(userdata);
+
+    // CT 수신 (M-04): 로컬 CT 갱신
+    if (std::strcmp(msg->topic, TOPIC_TOPOLOGY) == 0)
+    {
+        ConnectionTable ct;
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+        if (!connection_table_from_json(json, ct)) return;
+
+        if (ct.version <= ctx->last_ct_version) return;
+
+        // CT 적용
+        ctx->ct_manager.setActiveCoreId(ct.active_core_id);
+        ctx->ct_manager.setBackupCoreId(ct.backup_core_id);
+        for (int i = 0; i < ct.node_count; i++) {
+            if (!ctx->ct_manager.addNode(ct.nodes[i]))
+                ctx->ct_manager.updateNode(ct.nodes[i]);
+        }
+        for (int i = 0; i < ct.link_count; i++)
+            ctx->ct_manager.addLink(ct.links[i]);
+
+        ctx->last_ct_version = ct.version;
+        printf("[pub_sim] CT applied (version=%d, nodes=%d)\n", ct.version, ct.node_count);
+
+        // primary edge ID 해석 시도
+        try_resolve_primary_edge_id(ctx, ct);
+
+        // fallback 중이면 primary edge 복구 확인
+        if (ctx->on_fallback) {
+            attempt_return_to_primary(ctx);
+        }
+        return;
+    }
+
+    // Node LWT 수신: Edge 장애 사전 감지
+    if (std::strncmp(msg->topic, "campus/will/node/", 17) == 0)
+    {
+        const char* failed_node_id = msg->topic + 17;
+        printf("[pub_sim] edge down detected: %s\n", failed_node_id);
+
+        // CT에서 해당 노드를 OFFLINE으로 마킹
+        ctx->ct_manager.setNodeStatus(failed_node_id, NODE_STATUS_OFFLINE);
+
+        // 현재 연결 중인 primary edge가 죽은 경우
+        if (ctx->primary_edge_id[0] != '\0' &&
+            std::strncmp(ctx->primary_edge_id, failed_node_id, UUID_LEN) == 0 &&
+            !ctx->on_fallback)
+        {
+            printf("[pub_sim] primary edge down, triggering failover\n");
+            attempt_failover(ctx);
+        }
+        return;
+    }
+
+    // Core switch 수신: Active Core 변경
+    if (std::strcmp(msg->topic, "campus/alert/core_switch") == 0)
+    {
+        printf("[pub_sim] core_switch received\n");
+        return;
+    }
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[])
@@ -117,15 +358,36 @@ int main(int argc, char* argv[])
     std::signal(SIGINT,  on_signal);
     std::signal(SIGTERM, on_signal);
 
+    // ── PubContext 초기화 ─────────────────────────────────────────────────────
+    PubContext ctx = {};
+    ctx.cfg = &cfg;
+    ctx.last_ct_version = 0;
+    ctx.connected = false;
+    ctx.on_fallback = false;
+    std::strncpy(ctx.primary_ip, cfg.broker_host, IP_LEN - 1);
+    ctx.primary_port = cfg.broker_port;
+    std::strncpy(ctx.current_ip, cfg.broker_host, IP_LEN - 1);
+    ctx.current_port = cfg.broker_port;
+    ctx.primary_edge_id[0] = '\0';
+    ctx.ct_manager.init("", "");
+
     // ── mosquitto 초기화 ──────────────────────────────────────────────────────
     mosquitto_lib_init();
+    setvbuf(stdout, nullptr, _IOLBF, 0);
 
-    struct mosquitto* mosq = mosquitto_new(cfg.publisher_id, true, nullptr);
+    struct mosquitto* mosq = mosquitto_new(cfg.publisher_id, true, &ctx);
     if (!mosq) {
         fprintf(stderr, "오류: mosquitto_new 실패\n");
         mosquitto_lib_cleanup();
         return 1;
     }
+    ctx.mosq = mosq;
+
+    // 콜백 등록
+    mosquitto_connect_callback_set(mosq, on_connect);
+    mosquitto_disconnect_callback_set(mosq, on_disconnect);
+    mosquitto_message_callback_set(mosq, on_message);
+    mosquitto_reconnect_delay_set(mosq, 1, 10, false);
 
     if (mosquitto_connect(mosq, cfg.broker_host, cfg.broker_port, 60) != MOSQ_ERR_SUCCESS) {
         fprintf(stderr, "오류: 브로커 연결 실패 (%s:%d)\n",
@@ -135,13 +397,16 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    // threaded loop 사용 — CT 수신 및 failover가 비동기로 동작
+    mosquitto_loop_start(mosq);
+
     printf("[pub_sim] 브로커 %s:%d 연결 완료 (id=%s)\n",
            cfg.broker_host, cfg.broker_port, cfg.publisher_id);
 
     // ── Edge 등록 ─────────────────────────────────────────────────────────────
     if (cfg.register_edge) {
         publish_registration(mosq, cfg.publisher_id, cfg.qos);
-        mosquitto_loop(mosq, 100, 1);
+        usleep(100000);  // 100ms — ACK 처리 대기
     }
 
     // ── 이벤트 루프 ──────────────────────────────────────────────────────────
@@ -177,17 +442,24 @@ int main(int argc, char* argv[])
 
         std::string json = mqtt_message_to_json(msg);
 
-        // 1차 전송
-        mosquitto_publish(mosq, nullptr, topic, (int)json.size(),
-                          json.c_str(), cfg.qos, false);
-        sent++;
-
-        if (cfg.verbose) {
-            printf("[pub] #%d topic=%s msg_id=%s\n", sent, topic, msg.msg_id);
+        // 연결 중이면 즉시 전송, 아니면 큐에 저장
+        if (ctx.connected) {
+            int rc = mosquitto_publish(mosq, nullptr, topic, (int)json.size(),
+                                       json.c_str(), cfg.qos, false);
+            if (rc == MOSQ_ERR_SUCCESS) {
+                sent++;
+                if (cfg.verbose) {
+                    printf("[pub] #%d topic=%s msg_id=%s\n", sent, topic, msg.msg_id);
+                }
+            } else {
+                queue_event(&ctx, topic, json);
+            }
+        } else {
+            queue_event(&ctx, topic, json);
         }
 
         // 중복 재전송
-        if (cfg.dup_inject) {
+        if (cfg.dup_inject && ctx.connected) {
             mark_message_as_dup(&msg);
             std::string dup_json = mqtt_message_to_json(msg);
             for (int d = 0; d < cfg.dup_count; d++) {
@@ -198,9 +470,6 @@ int main(int argc, char* argv[])
                 }
             }
         }
-
-        // mosquitto 내부 루프 (ACK 처리)
-        mosquitto_loop(mosq, 0, 1);
 
         if (sleep_us > 0) {
             usleep((useconds_t)sleep_us);
@@ -213,13 +482,21 @@ int main(int argc, char* argv[])
     double throughput = elapsed_ms > 0 ? (sent / (elapsed_ms / 1000.0)) : 0.0;
 
     // 남은 패킷 flush
-    mosquitto_loop(mosq, 200, 1);
+    flush_store_queue(&ctx);
+    usleep(200000);  // 200ms
 
     printf("\n[pub_sim] 완료\n");
     printf("  전송: %d 이벤트\n", sent);
     printf("  시간: %.1f ms\n", elapsed_ms);
     printf("  처리량: %.1f events/sec\n", throughput);
+    {
+        std::lock_guard<std::mutex> lock(ctx.queue_mutex);
+        if (!ctx.store_queue.empty()) {
+            printf("  미전송 큐: %zu 이벤트\n", ctx.store_queue.size());
+        }
+    }
 
+    mosquitto_loop_stop(mosq, true);
     mosquitto_disconnect(mosq);
     mosquitto_destroy(mosq);
     mosquitto_lib_cleanup();

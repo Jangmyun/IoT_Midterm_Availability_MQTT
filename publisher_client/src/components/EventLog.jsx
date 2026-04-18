@@ -7,6 +7,12 @@ const PRIORITY_CLASS = {
   LOW:    'badge--gray',
 };
 
+const DELIVERY_CLASS = {
+  sent: 'badge--green',
+  flushed: 'badge--purple',
+  queued: 'badge--gray',
+};
+
 const TYPE_LABEL = {
   MOTION:     '모션',
   DOOR_FORCED:'강제 개문',
@@ -15,6 +21,12 @@ const TYPE_LABEL = {
 
 function timeStr(sentAt) {
   return new Date(sentAt).toLocaleTimeString('ko-KR', { hour12: false });
+}
+
+function statusLabel(status) {
+  if (status === 'flushed') return '재전송';
+  if (status === 'queued') return '대기';
+  return '전송';
 }
 
 export function EventLog({ events }) {
@@ -34,7 +46,11 @@ export function EventLog({ events }) {
           <span className={`badge ${PRIORITY_CLASS[ev.priority] ?? 'badge--gray'}`}>
             {TYPE_LABEL[ev.type] ?? ev.type}
           </span>
+          <span className={`badge ${DELIVERY_CLASS[ev.status] ?? 'badge--gray'}`}>
+            {statusLabel(ev.status)}
+          </span>
           <span className="event-log__topic">{ev.topic}</span>
+          {ev.brokerUrl && <span className="event-log__broker">{ev.brokerUrl}</span>}
         </li>
       ))}
     </ol>

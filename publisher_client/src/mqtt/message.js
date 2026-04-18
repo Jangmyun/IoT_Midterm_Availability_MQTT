@@ -4,6 +4,8 @@
 // 발행 토픽: campus/data/<type>/<building>/<camera>
 // 페이로드: MqttMessage JSON (C++ broker와 동일한 포맷)
 
+import { generateUuid } from '../utils/uuid.js';
+
 export const MSG_TYPES = {
   MOTION:     'MOTION',
   DOOR_FORCED:'DOOR_FORCED',
@@ -48,7 +50,7 @@ export function buildMessage({ publisherId, type, buildingId, cameraId, descript
   if (!MSG_TYPES[type]) throw new Error(`unknown type: ${type}`);
 
   return {
-    msg_id:    crypto.randomUUID(),
+    msg_id:    generateUuid(),
     type,
     timestamp: nowUtc(),
     priority:  inferPriority(type),

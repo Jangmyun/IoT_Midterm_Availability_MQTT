@@ -34,12 +34,16 @@ Usage: ./test/test_pub.sh <case>
   core_node_recovery
   core_election
   core_election_distributed
+  core_event_e2e
 
 [edge] edge_broker 동작 검증 (BUILD_DIR 또는 EDGE_BINARY 필요):
   edge_ping_pong
   edge_lwt
   edge_core_switch
   edge_ct_active_core_change
+  edge_rtt_relay
+  edge_store_forward
+  edge_stable_node_id
 
 [전체 실행]:
   all_client      client/smoke + client/edge-cases 전체
@@ -82,10 +86,14 @@ core/core_switch
 core/node_recovery
 core/election
 core/election_distributed
+core/event_e2e
 edge/ping_pong
 edge/lwt
 edge/core_switch
 edge/ct_active_core_change
+edge/rtt_relay
+edge/store_forward
+edge/stable_node_id
 EOF
 }
 
@@ -129,6 +137,7 @@ run_all_core() {
   try_run_binary_test "$SCRIPT_DIR/core/07_node_recovery.sh" "core/07_node_recovery"
   try_run_binary_test "$SCRIPT_DIR/core/08_election.sh"             "core/08_election"
   try_run_binary_test "$SCRIPT_DIR/core/09_election_distributed.sh" "core/09_election_distributed"
+  try_run_binary_test "$SCRIPT_DIR/core/10_event_e2e.sh"    "core/10_event_e2e"
   printf '[test] all_core completed\n'
 }
 
@@ -137,6 +146,9 @@ run_all_edge() {
   try_run_binary_test "$SCRIPT_DIR/edge/02_lwt.sh"                    "edge/02_lwt"
   try_run_binary_test "$SCRIPT_DIR/edge/03_core_switch.sh"            "edge/03_core_switch"
   try_run_binary_test "$SCRIPT_DIR/edge/04_ct_active_core_change.sh"  "edge/04_ct_active_core_change"
+  try_run_binary_test "$SCRIPT_DIR/edge/05_rtt_relay.sh"              "edge/05_rtt_relay"
+  try_run_binary_test "$SCRIPT_DIR/edge/06_store_and_forward.sh"      "edge/06_store_and_forward"
+  try_run_binary_test "$SCRIPT_DIR/edge/07_stable_node_id.sh"         "edge/07_stable_node_id"
   printf '[test] all_edge completed\n'
 }
 
@@ -166,11 +178,15 @@ case "${1:-help}" in
   core_node_recovery)  exec "$SCRIPT_DIR/core/07_node_recovery.sh" ;;
   core_election)              exec "$SCRIPT_DIR/core/08_election.sh" ;;
   core_election_distributed)  exec "$SCRIPT_DIR/core/09_election_distributed.sh" ;;
+  core_event_e2e)      exec "$SCRIPT_DIR/core/10_event_e2e.sh" ;;
   # edge
   edge_ping_pong)              exec "$SCRIPT_DIR/edge/01_ping_pong.sh" ;;
   edge_lwt)                    exec "$SCRIPT_DIR/edge/02_lwt.sh" ;;
   edge_core_switch)            exec "$SCRIPT_DIR/edge/03_core_switch.sh" ;;
   edge_ct_active_core_change)  exec "$SCRIPT_DIR/edge/04_ct_active_core_change.sh" ;;
+  edge_rtt_relay)              exec "$SCRIPT_DIR/edge/05_rtt_relay.sh" ;;
+  edge_store_forward)          exec "$SCRIPT_DIR/edge/06_store_and_forward.sh" ;;
+  edge_stable_node_id)         exec "$SCRIPT_DIR/edge/07_stable_node_id.sh" ;;
   # 전체 실행
   all_client)         run_all_client ;;
   all_core)           run_all_core ;;

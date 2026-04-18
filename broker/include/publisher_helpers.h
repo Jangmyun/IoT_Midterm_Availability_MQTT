@@ -170,6 +170,128 @@ inline long rate_to_sleep_us(int rate_hz)
     return (long)(1000000L / rate_hz);
 }
 
+// ── Failover 로직 (Phase 7): CT 기반 대체 브로커 자동 선택 ───────────────────
+
+// select_fallback_broker() 반환값
+struct FallbackBroker {
+    char id[UUID_LEN];
+    char ip[IP_LEN];
+    uint16_t port;
+    bool found;          // 후보가 있으면 true
+};
+
+// CT에서 ONLINE 노드 중 primary_edge_id를 제외하고 최적 대체 브로커 선택 (FR-08 확장)
+//   1차 기준: Edge(NODE_ROLE_NODE) 우선
+//   2차 기준: RTT(ms) 최소 (링크가 없으면 FLT_MAX — 후보 제외 아님, 최후 순위)
+//   3차 기준: hop_to_core 최소
+//   Edge 후보가 없으면 Core(NODE_ROLE_CORE) 중 ONLINE인 active/backup 선택
+//   모두 OFFLINE이면 found=false
+inline FallbackBroker select_fallback_broker(const ConnectionTable& ct,
+                                              const char* primary_edge_id)
+{
+    FallbackBroker result = {};
+    result.found = false;
+
+    // 보조 데이터: (node_index, rtt, hop_to_core, is_edge)
+    struct Candidate {
+        int   idx;
+        float rtt;
+        int   hop;
+        bool  is_edge;
+    };
+
+    Candidate best = { -1, FLT_MAX, INT_MAX, false };
+
+    for (int i = 0; i < ct.node_count; i++)
+    {
+        const NodeEntry& n = ct.nodes[i];
+        if (n.status != NODE_STATUS_ONLINE)                   continue;
+        if (n.ip[0] == '\0' || n.port == 0)                   continue;
+        // primary edge 자체는 제외
+        if (primary_edge_id && primary_edge_id[0] != '\0' &&
+            std::strncmp(n.id, primary_edge_id, UUID_LEN) == 0)
+            continue;
+
+        bool is_edge = (n.role == NODE_ROLE_NODE);
+
+        // primary_edge_id → 이 노드 방향 링크의 RTT 탐색
+        float rtt = FLT_MAX;
+        if (primary_edge_id && primary_edge_id[0] != '\0')
+        {
+            for (int j = 0; j < ct.link_count; j++)
+            {
+                if (std::strncmp(ct.links[j].from_id, primary_edge_id, UUID_LEN) == 0 &&
+                    std::strncmp(ct.links[j].to_id, n.id, UUID_LEN) == 0)
+                {
+                    rtt = ct.links[j].rtt_ms;
+                    break;
+                }
+            }
+        }
+
+        // 비교: is_edge 우선 → RTT 최소 → hop_to_core 최소
+        bool better = false;
+        if (best.idx < 0)
+        {
+            better = true;
+        }
+        else if (is_edge && !best.is_edge)
+        {
+            better = true;   // Edge 우선
+        }
+        else if (!is_edge && best.is_edge)
+        {
+            better = false;  // Core는 Edge보다 후순위
+        }
+        else
+        {
+            // 같은 역할(both edge or both core)
+            if (rtt < best.rtt)
+                better = true;
+            else if (rtt == best.rtt && n.hop_to_core < best.hop)
+                better = true;
+        }
+
+        if (better)
+        {
+            best.idx     = i;
+            best.rtt     = rtt;
+            best.hop     = n.hop_to_core;
+            best.is_edge = is_edge;
+        }
+    }
+
+    if (best.idx >= 0)
+    {
+        const NodeEntry& n = ct.nodes[best.idx];
+        std::strncpy(result.id, n.id, UUID_LEN - 1);
+        result.id[UUID_LEN - 1] = '\0';
+        std::strncpy(result.ip, n.ip, IP_LEN - 1);
+        result.ip[IP_LEN - 1] = '\0';
+        result.port  = n.port;
+        result.found = true;
+    }
+
+    return result;
+}
+
+// primary edge가 CT에서 ONLINE 상태인지 확인 — ONLINE이면 원래 Edge로 복귀
+inline bool should_return_to_primary(const ConnectionTable& ct,
+                                      const char* primary_edge_id)
+{
+    if (!primary_edge_id || primary_edge_id[0] == '\0')
+        return false;
+
+    for (int i = 0; i < ct.node_count; i++)
+    {
+        if (std::strncmp(ct.nodes[i].id, primary_edge_id, UUID_LEN) == 0)
+        {
+            return ct.nodes[i].status == NODE_STATUS_ONLINE;
+        }
+    }
+    return false;  // CT에 없으면 복귀 불가
+}
+
 // ── parse_publisher_args ──────────────────────────────────────────────────────
 
 // argv 에서 "--events" 인자 파싱: "motion,door,intrusion" → event_mask

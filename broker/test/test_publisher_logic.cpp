@@ -475,6 +475,261 @@ static void tc_parse_args_events() {
     end_test("TC-18: parse_publisher_args — --events motion,door → event_mask");
 }
 
+// ── TC-19: select_fallback_broker — ONLINE Edge 중 RTT 최소 선택 ─────────────
+
+static void tc_select_fallback_rtt_min() {
+    begin_test("TC-19: select_fallback_broker — ONLINE Edge 중 RTT 최소 선택");
+
+    ConnectionTable ct = {};
+    ct.version = 1;
+
+    // primary edge
+    NodeEntry primary = {};
+    std::strncpy(primary.id, "edge-primary-0001", UUID_LEN - 1);
+    primary.role = NODE_ROLE_NODE;
+    std::strncpy(primary.ip, "10.0.0.1", IP_LEN - 1);
+    primary.port = 1883;
+    primary.status = NODE_STATUS_OFFLINE;
+    primary.hop_to_core = 1;
+    ct.nodes[ct.node_count++] = primary;
+
+    // Edge A: RTT=50ms
+    NodeEntry edgeA = {};
+    std::strncpy(edgeA.id, "edge-aaaa-0001", UUID_LEN - 1);
+    edgeA.role = NODE_ROLE_NODE;
+    std::strncpy(edgeA.ip, "10.0.0.2", IP_LEN - 1);
+    edgeA.port = 1883;
+    edgeA.status = NODE_STATUS_ONLINE;
+    edgeA.hop_to_core = 1;
+    ct.nodes[ct.node_count++] = edgeA;
+
+    // Edge B: RTT=20ms (더 빠름)
+    NodeEntry edgeB = {};
+    std::strncpy(edgeB.id, "edge-bbbb-0001", UUID_LEN - 1);
+    edgeB.role = NODE_ROLE_NODE;
+    std::strncpy(edgeB.ip, "10.0.0.3", IP_LEN - 1);
+    edgeB.port = 1883;
+    edgeB.status = NODE_STATUS_ONLINE;
+    edgeB.hop_to_core = 1;
+    ct.nodes[ct.node_count++] = edgeB;
+
+    // Links from primary
+    LinkEntry linkA = {};
+    std::strncpy(linkA.from_id, "edge-primary-0001", UUID_LEN - 1);
+    std::strncpy(linkA.to_id, "edge-aaaa-0001", UUID_LEN - 1);
+    linkA.rtt_ms = 50.0f;
+    ct.links[ct.link_count++] = linkA;
+
+    LinkEntry linkB = {};
+    std::strncpy(linkB.from_id, "edge-primary-0001", UUID_LEN - 1);
+    std::strncpy(linkB.to_id, "edge-bbbb-0001", UUID_LEN - 1);
+    linkB.rtt_ms = 20.0f;
+    ct.links[ct.link_count++] = linkB;
+
+    FallbackBroker fb = select_fallback_broker(ct, "edge-primary-0001");
+    CHECK_TRUE(fb.found);
+    CHECK_STREQ(fb.id, "edge-bbbb-0001");
+    CHECK_STREQ(fb.ip, "10.0.0.3");
+    CHECK_EQ(fb.port, 1883);
+
+    end_test("TC-19: select_fallback_broker — ONLINE Edge 중 RTT 최소 선택");
+}
+
+// ── TC-20: select_fallback_broker — RTT 동점 시 hop_to_core 최소 선택 ────────
+
+static void tc_select_fallback_hop_tiebreaker() {
+    begin_test("TC-20: select_fallback_broker — RTT 동점 시 hop_to_core 최소 선택");
+
+    ConnectionTable ct = {};
+    ct.version = 1;
+
+    // Edge A: RTT=30ms, hop=2
+    NodeEntry edgeA = {};
+    std::strncpy(edgeA.id, "edge-aaaa-0002", UUID_LEN - 1);
+    edgeA.role = NODE_ROLE_NODE;
+    std::strncpy(edgeA.ip, "10.0.0.2", IP_LEN - 1);
+    edgeA.port = 2883;
+    edgeA.status = NODE_STATUS_ONLINE;
+    edgeA.hop_to_core = 2;
+    ct.nodes[ct.node_count++] = edgeA;
+
+    // Edge B: RTT=30ms, hop=1 (더 가까움)
+    NodeEntry edgeB = {};
+    std::strncpy(edgeB.id, "edge-bbbb-0002", UUID_LEN - 1);
+    edgeB.role = NODE_ROLE_NODE;
+    std::strncpy(edgeB.ip, "10.0.0.3", IP_LEN - 1);
+    edgeB.port = 3883;
+    edgeB.status = NODE_STATUS_ONLINE;
+    edgeB.hop_to_core = 1;
+    ct.nodes[ct.node_count++] = edgeB;
+
+    LinkEntry linkA = {};
+    std::strncpy(linkA.from_id, "edge-primary-x", UUID_LEN - 1);
+    std::strncpy(linkA.to_id, "edge-aaaa-0002", UUID_LEN - 1);
+    linkA.rtt_ms = 30.0f;
+    ct.links[ct.link_count++] = linkA;
+
+    LinkEntry linkB = {};
+    std::strncpy(linkB.from_id, "edge-primary-x", UUID_LEN - 1);
+    std::strncpy(linkB.to_id, "edge-bbbb-0002", UUID_LEN - 1);
+    linkB.rtt_ms = 30.0f;
+    ct.links[ct.link_count++] = linkB;
+
+    FallbackBroker fb = select_fallback_broker(ct, "edge-primary-x");
+    CHECK_TRUE(fb.found);
+    CHECK_STREQ(fb.id, "edge-bbbb-0002");
+    CHECK_EQ(fb.port, 3883);
+
+    end_test("TC-20: select_fallback_broker — RTT 동점 시 hop_to_core 최소 선택");
+}
+
+// ── TC-21: select_fallback_broker — ONLINE Edge 없으면 Core 선택 ─────────────
+
+static void tc_select_fallback_core_when_no_edge() {
+    begin_test("TC-21: select_fallback_broker — ONLINE Edge 없으면 ONLINE Core 반환");
+
+    ConnectionTable ct = {};
+    ct.version = 1;
+
+    // OFFLINE Edge
+    NodeEntry edgeOff = {};
+    std::strncpy(edgeOff.id, "edge-off-0001", UUID_LEN - 1);
+    edgeOff.role = NODE_ROLE_NODE;
+    std::strncpy(edgeOff.ip, "10.0.0.2", IP_LEN - 1);
+    edgeOff.port = 1883;
+    edgeOff.status = NODE_STATUS_OFFLINE;
+    edgeOff.hop_to_core = 1;
+    ct.nodes[ct.node_count++] = edgeOff;
+
+    // ONLINE Core
+    NodeEntry core = {};
+    std::strncpy(core.id, "core-active-0001", UUID_LEN - 1);
+    core.role = NODE_ROLE_CORE;
+    std::strncpy(core.ip, "10.0.0.100", IP_LEN - 1);
+    core.port = 1883;
+    core.status = NODE_STATUS_ONLINE;
+    core.hop_to_core = 0;
+    ct.nodes[ct.node_count++] = core;
+
+    FallbackBroker fb = select_fallback_broker(ct, "edge-primary-y");
+    CHECK_TRUE(fb.found);
+    CHECK_STREQ(fb.id, "core-active-0001");
+    CHECK_STREQ(fb.ip, "10.0.0.100");
+    CHECK_EQ(fb.port, 1883);
+
+    end_test("TC-21: select_fallback_broker — ONLINE Edge 없으면 ONLINE Core 반환");
+}
+
+// ── TC-22: select_fallback_broker — 모두 OFFLINE이면 found=false ─────────────
+
+static void tc_select_fallback_all_offline() {
+    begin_test("TC-22: select_fallback_broker — 모두 OFFLINE이면 found=false");
+
+    ConnectionTable ct = {};
+    ct.version = 1;
+
+    NodeEntry offA = {};
+    std::strncpy(offA.id, "edge-off-a", UUID_LEN - 1);
+    offA.role = NODE_ROLE_NODE;
+    std::strncpy(offA.ip, "10.0.0.2", IP_LEN - 1);
+    offA.port = 1883;
+    offA.status = NODE_STATUS_OFFLINE;
+    ct.nodes[ct.node_count++] = offA;
+
+    NodeEntry offB = {};
+    std::strncpy(offB.id, "core-off-b", UUID_LEN - 1);
+    offB.role = NODE_ROLE_CORE;
+    std::strncpy(offB.ip, "10.0.0.100", IP_LEN - 1);
+    offB.port = 1883;
+    offB.status = NODE_STATUS_OFFLINE;
+    ct.nodes[ct.node_count++] = offB;
+
+    FallbackBroker fb = select_fallback_broker(ct, "edge-primary-z");
+    CHECK_FALSE(fb.found);
+
+    end_test("TC-22: select_fallback_broker — 모두 OFFLINE이면 found=false");
+}
+
+// ── TC-23: select_fallback_broker — primary edge 자체는 후보 제외 ────────────
+
+static void tc_select_fallback_excludes_primary() {
+    begin_test("TC-23: select_fallback_broker — primary edge 자체는 후보에서 제외");
+
+    ConnectionTable ct = {};
+    ct.version = 1;
+
+    // primary edge ONLINE — 후보에서 제외되어야 함
+    NodeEntry primary = {};
+    std::strncpy(primary.id, "edge-primary-only", UUID_LEN - 1);
+    primary.role = NODE_ROLE_NODE;
+    std::strncpy(primary.ip, "10.0.0.1", IP_LEN - 1);
+    primary.port = 1883;
+    primary.status = NODE_STATUS_ONLINE;
+    primary.hop_to_core = 1;
+    ct.nodes[ct.node_count++] = primary;
+
+    // 다른 후보 없음
+    FallbackBroker fb = select_fallback_broker(ct, "edge-primary-only");
+    CHECK_FALSE(fb.found);
+
+    end_test("TC-23: select_fallback_broker — primary edge 자체는 후보에서 제외");
+}
+
+// ── TC-24: should_return_to_primary — ONLINE이면 true ────────────────────────
+
+static void tc_return_to_primary_online() {
+    begin_test("TC-24: should_return_to_primary — primary edge ONLINE이면 true");
+
+    ConnectionTable ct = {};
+    ct.version = 1;
+
+    NodeEntry primary = {};
+    std::strncpy(primary.id, "edge-primary-ret", UUID_LEN - 1);
+    primary.role = NODE_ROLE_NODE;
+    primary.status = NODE_STATUS_ONLINE;
+    ct.nodes[ct.node_count++] = primary;
+
+    CHECK_TRUE(should_return_to_primary(ct, "edge-primary-ret"));
+
+    end_test("TC-24: should_return_to_primary — primary edge ONLINE이면 true");
+}
+
+// ── TC-25: should_return_to_primary — OFFLINE이면 false ──────────────────────
+
+static void tc_return_to_primary_offline() {
+    begin_test("TC-25: should_return_to_primary — primary edge OFFLINE이면 false");
+
+    ConnectionTable ct = {};
+    ct.version = 1;
+
+    NodeEntry primary = {};
+    std::strncpy(primary.id, "edge-primary-off", UUID_LEN - 1);
+    primary.role = NODE_ROLE_NODE;
+    primary.status = NODE_STATUS_OFFLINE;
+    ct.nodes[ct.node_count++] = primary;
+
+    CHECK_FALSE(should_return_to_primary(ct, "edge-primary-off"));
+
+    end_test("TC-25: should_return_to_primary — primary edge OFFLINE이면 false");
+}
+
+// ── TC-26: should_return_to_primary — CT에 없으면 false ──────────────────────
+
+static void tc_return_to_primary_missing() {
+    begin_test("TC-26: should_return_to_primary — primary edge가 CT에 없으면 false");
+
+    ConnectionTable ct = {};
+    ct.version = 1;
+    // 빈 CT
+
+    CHECK_FALSE(should_return_to_primary(ct, "edge-nonexistent"));
+    // null/empty edge_id
+    CHECK_FALSE(should_return_to_primary(ct, nullptr));
+    CHECK_FALSE(should_return_to_primary(ct, ""));
+
+    end_test("TC-26: should_return_to_primary — primary edge가 CT에 없으면 false");
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -500,6 +755,16 @@ int main() {
     tc_parse_args_flags();
     tc_parse_args_invalid_port();
     tc_parse_args_events();
+
+    // Phase 7: CT 기반 Failover 단위 테스트
+    tc_select_fallback_rtt_min();
+    tc_select_fallback_hop_tiebreaker();
+    tc_select_fallback_core_when_no_edge();
+    tc_select_fallback_all_offline();
+    tc_select_fallback_excludes_primary();
+    tc_return_to_primary_online();
+    tc_return_to_primary_offline();
+    tc_return_to_primary_missing();
 
     printf("══════════════════════════════════════\n");
     printf("  결과: %d passed, %d failed\n", g_pass, g_fail);

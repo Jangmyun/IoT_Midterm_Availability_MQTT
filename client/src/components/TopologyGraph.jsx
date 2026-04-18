@@ -22,7 +22,7 @@ import {
  *
  * @param {{ topology: { nodes: any[], links: any[] } | null, onNodeClick?: (id: string | null) => void }} props
  */
-export default function TopologyGraph({ topology, onNodeClick }) {
+export default function TopologyGraph({ topology, onNodeClick, nodeDisplayMap }) {
   const containerRef = useRef(null);
   const cyRef = useRef(null);
   const onNodeClickRef = useRef(onNodeClick);
@@ -249,7 +249,7 @@ export default function TopologyGraph({ topology, onNodeClick }) {
         group: 'nodes',
         data: {
           id: rawId,
-          label: buildTopologyNodeLabel(topology, n),
+          label: nodeDisplayMap?.get(rawId)?.graphLabel ?? buildTopologyNodeLabel(topology, n),
           role: n.role ?? 'NODE',
           status: n.status ?? 'ONLINE',
           nodeKind: classifyTopologyNode(topology, n),

@@ -22,6 +22,9 @@ struct CoreContext {
     bool                            is_backup;
     char                            active_core_ip[IP_LEN]; // Backup only: peer IP
     int                             active_core_port;        // Backup only: peer port
+    char                            backup_core_id[UUID_LEN]; // Active only: advertised backup ID
+    char                            backup_core_ip[IP_LEN];   // Active only: advertised backup IP
+    int                             backup_core_port;         // Active only: advertised backup port
     ConnectionTableManager* ct_manager;
     std::unordered_set<std::string> seen_msg_ids;
     struct mosquitto* mosq_self;  // own broker connection
@@ -37,25 +40,46 @@ static void handle_signal(int) { g_running = false; }
 
 // CT 발행 헬퍼 =====================================================
 
-static std::string build_core_lwt_json(const char* core_id) {
+static std::string build_core_lwt_json(const CoreContext& ctx) {
     MqttMessage lwt = {};
     uuid_generate(lwt.msg_id);
     lwt.type = MSG_TYPE_LWT_CORE;
     lwt.source.role = NODE_ROLE_CORE;
-    std::strncpy(lwt.source.id, core_id, UUID_LEN - 1);
+    std::strncpy(lwt.source.id, ctx.core_id, UUID_LEN - 1);
     lwt.source.id[UUID_LEN - 1] = '\0';
     lwt.delivery = { 1, false, false };
+
+    if (!ctx.is_backup &&
+        ctx.backup_core_id[0] != '\0' &&
+        ctx.backup_core_ip[0] != '\0' &&
+        ctx.backup_core_port > 0) {
+        lwt.target.role = NODE_ROLE_CORE;
+        std::strncpy(lwt.target.id, ctx.backup_core_id, UUID_LEN - 1);
+        lwt.target.id[UUID_LEN - 1] = '\0';
+
+        std::strncpy(lwt.route.original_node, ctx.core_id, UUID_LEN - 1);
+        lwt.route.original_node[UUID_LEN - 1] = '\0';
+        std::strncpy(lwt.route.prev_hop, ctx.core_id, UUID_LEN - 1);
+        lwt.route.prev_hop[UUID_LEN - 1] = '\0';
+        std::strncpy(lwt.route.next_hop, ctx.backup_core_id, UUID_LEN - 1);
+        lwt.route.next_hop[UUID_LEN - 1] = '\0';
+        lwt.route.ttl = 1;
+
+        std::snprintf(lwt.payload.description, DESCRIPTION_LEN,
+            "%s:%d", ctx.backup_core_ip, ctx.backup_core_port);
+    }
+
     return mqtt_message_to_json(lwt);
 }
 
-static void publish_core_down_notice(struct mosquitto* mosq, const char* core_id) {
-    if (!mosq || !core_id || core_id[0] == '\0') {
+static void publish_core_down_notice(struct mosquitto* mosq, const CoreContext& ctx) {
+    if (!mosq || ctx.core_id[0] == '\0') {
         return;
     }
 
     char topic[128];
-    std::snprintf(topic, sizeof(topic), "%s%s", TOPIC_LWT_CORE_PREFIX, core_id);
-    std::string lwt_json = build_core_lwt_json(core_id);
+    std::snprintf(topic, sizeof(topic), "%s%s", TOPIC_LWT_CORE_PREFIX, ctx.core_id);
+    std::string lwt_json = build_core_lwt_json(ctx);
     mosquitto_publish(mosq, nullptr, topic,
         (int)lwt_json.size(), lwt_json.c_str(), 1, false);
 }
@@ -596,17 +620,23 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
 
 int main(int argc, char* argv[]) {
     // Active: <broker_host> <broker_port>
+    // Active(with backup hint): <broker_host> <broker_port> <backup_core_id> <backup_core_ip> <backup_core_port>
     // Backup: <broker_host> <broker_port> <active_core_ip> <active_core_port>
-    if (argc < 3) {
+    if (argc != 3 && argc != 5 && argc != 6) {
         fprintf(stderr, "usage: %s <broker_host> <broker_port>"
-            " [active_core_ip active_core_port]\n", argv[0]);
+            " [active_core_ip active_core_port]\n"
+            "   or: %s <broker_host> <broker_port> <backup_core_id> <backup_core_ip> <backup_core_port>\n",
+            argv[0], argv[0]);
         return 1;
     }
     const char* broker_host = argv[1];
     int         broker_port = atoi(argv[2]);
-    bool        is_backup = (argc >= 5);
+    bool        is_backup = (argc == 5);
     const char* active_core_ip = is_backup ? argv[3] : "";
     int         active_core_port = is_backup ? atoi(argv[4]) : 0;
+    const char* backup_core_id = (argc == 6) ? argv[3] : "";
+    const char* backup_core_ip = (argc == 6) ? argv[4] : "";
+    int         backup_core_port = (argc == 6) ? atoi(argv[5]) : 0;
 
     setvbuf(stdout, nullptr, _IOLBF, 0);  // 테스트 스크립트가 로그를 실시간 grep할 수 있도록 line-buffered 설정
     signal(SIGINT, handle_signal);
@@ -621,6 +651,11 @@ int main(int argc, char* argv[]) {
     if (is_backup) {
         strncpy(ctx.active_core_ip, active_core_ip, IP_LEN - 1);
         ctx.active_core_port = active_core_port;
+    }
+    else if (argc == 6) {
+        strncpy(ctx.backup_core_id, backup_core_id, UUID_LEN - 1);
+        strncpy(ctx.backup_core_ip, backup_core_ip, IP_LEN - 1);
+        ctx.backup_core_port = backup_core_port;
     }
 
     // 2. mosquitto 라이브러리 초기화
@@ -655,13 +690,13 @@ int main(int argc, char* argv[]) {
     }
     ctx.mosq_self = mosq;
 
-    // 5. LWT 설정 (W-01): 자신의 종료 알림 (payload에 backup 정보 불포함)
-    //    Failover 신호는 Backup Core가 campus/alert/core_switch 로 전달
+    // 5. LWT 설정 (W-01): Active는 backup endpoint 힌트를 포함할 수 있다.
+    //    Backup의 실제 승격 알림은 campus/alert/core_switch 로 별도 전달된다.
     {
         char lwt_topic[128];
         snprintf(lwt_topic, sizeof(lwt_topic), "%s%s", TOPIC_LWT_CORE_PREFIX, ctx.core_id);
 
-        std::string lwt_json = build_core_lwt_json(ctx.core_id);
+        std::string lwt_json = build_core_lwt_json(ctx);
         mosquitto_will_set(mosq, lwt_topic,
             (int)lwt_json.size(), lwt_json.c_str(), 1, false);
     }
@@ -706,7 +741,7 @@ int main(int argc, char* argv[]) {
             {
                 char lwt_topic[128];
                 snprintf(lwt_topic, sizeof(lwt_topic), "%s%s", TOPIC_LWT_CORE_PREFIX, ctx.core_id);
-                std::string lwt_json = build_core_lwt_json(ctx.core_id);
+                std::string lwt_json = build_core_lwt_json(ctx);
                 mosquitto_will_set(mosq_peer, lwt_topic,
                     (int)lwt_json.size(), lwt_json.c_str(), 1, false);
             }
@@ -731,9 +766,9 @@ int main(int argc, char* argv[]) {
 
     // 8. 정상 종료
     printf("[core] shutting down\n");
-    publish_core_down_notice(mosq, ctx.core_id);
+    publish_core_down_notice(mosq, ctx);
     if (mosq_peer) {
-        publish_core_down_notice(mosq_peer, ctx.core_id);
+        publish_core_down_notice(mosq_peer, ctx);
     }
     {
         struct timespec flush_ts = { 0, 250 * 1000 * 1000 };

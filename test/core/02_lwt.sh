@@ -15,9 +15,9 @@ start_subscriber "$sub_log" "campus/will/core/#" >/dev/null
 sleep 1
 
 core_pid="$(start_core "$core_log")"
-if ! wait_for_pattern "$core_log" '\[core\] connected' 10; then
+if ! wait_for_pattern "$core_log" '\[core\] connected \(ACTIVE\)' 10; then
   show_file_tail "$core_log"
-  die "core did not connect to broker"
+  die "core did not connect as ACTIVE broker"
 fi
 
 core_id="$(extract_core_id "$core_log")"
@@ -28,11 +28,19 @@ if ! wait_for_pattern "$sub_log" "campus/will/core/$core_id" 10; then
   die "core LWT topic was not observed"
 fi
 
-# Active Core LWT는 종료 알림만 포함 (backup 정보 없음).
-# Failover IP:Port 는 Backup Core가 core_switch 토픽으로 별도 전달 (CORE-06 참조).
 if ! wait_for_pattern "$sub_log" 'LWT_CORE' 10; then
   show_file_tail "$sub_log"
   die "core LWT payload does not contain LWT_CORE type"
+fi
+
+if ! wait_for_pattern "$sub_log" "$BACKUP_CORE_IP:$BACKUP_CORE_PORT" 10; then
+  show_file_tail "$sub_log"
+  die "core LWT payload does not contain backup endpoint"
+fi
+
+if ! wait_for_pattern "$sub_log" "$BACKUP_CORE_ID" 10; then
+  show_file_tail "$sub_log"
+  die "core LWT payload does not contain backup core id"
 fi
 
 log "core LWT ok: core_id=$core_id"

@@ -1,7 +1,29 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMqtt } from './hooks/useMqtt.js';
 import TopologyGraph from './components/TopologyGraph.jsx';
+import {
+  formatClockTime,
+  formatDelayLabel,
+  formatEventSourceOption,
+  formatEventTime,
+  getEventPresentation,
+} from './mqtt/eventPresentation.js';
+import { buildNodePresentationMap, getNodeAliasKey, resolveNodeAlias } from './mqtt/nodePresentation.js';
 import './App.css';
+
+const NODE_ALIAS_STORAGE_KEY = 'monitor-node-aliases';
+
+function loadNodeAliases() {
+  try {
+    const raw = globalThis.localStorage?.getItem(NODE_ALIAS_STORAGE_KEY);
+    if (!raw) return {};
+
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 // 이벤트 타입별 배지 색상
 const EVENT_TYPE_COLOR = {
@@ -21,6 +43,7 @@ const INCIDENT_BADGE = {
   FAILOVER_SWITCH: 'badge--purple',
   EDGE_DOWN: 'badge--orange',
   EDGE_UP: 'badge--green',
+  BUFFERED_EVENTS: 'badge--yellow',
 };
 
 function reconnectReasonLabel(reason) {
@@ -39,26 +62,39 @@ function formatIncidentTime(ts) {
   });
 }
 
-function formatIncidentText(incident) {
+function formatNodeReference(nodeId, nodeDisplayMap, fallbackLabel = 'Unknown edge') {
+  if (!nodeId) return fallbackLabel;
+
+  const display = nodeDisplayMap?.get(nodeId);
+  if (display?.listLabel) return display.listLabel;
+  return `${nodeId.slice(0, 8)}…`;
+}
+
+function formatIncidentText(incident, nodeDisplayMap) {
   const shortId = incident.nodeId ? `${incident.nodeId.slice(0, 8)}…` : '(unknown)';
+  const nodeRef = formatNodeReference(incident.nodeId, nodeDisplayMap);
 
   if (incident.type === 'CORE_DOWN') {
-    return `Core ${shortId} disconnected`;
+    return `${nodeRef} disconnected`;
   }
   if (incident.type === 'ACTIVE_CORE_DOWN') {
-    return `Active core ${shortId} disconnected`;
+    return `${nodeRef} disconnected`;
   }
   if (incident.type === 'BACKUP_CORE_DOWN') {
-    return `Backup core ${shortId} disconnected`;
+    return `${nodeRef} disconnected`;
   }
   if (incident.type === 'FAILOVER_SWITCH') {
     return `Backup promoted to active${incident.endpoint ? ` (${incident.endpoint})` : ''}`;
   }
   if (incident.type === 'EDGE_DOWN') {
-    return `Edge ${shortId} disconnected`;
+    return `${nodeRef} disconnected`;
   }
   if (incident.type === 'EDGE_UP') {
-    return `Edge ${shortId} recovered`;
+    return `${nodeRef} recovered`;
+  }
+  if (incident.type === 'BUFFERED_EVENTS') {
+    const eventType = incident.eventType ? incident.eventType.replace('_', ' ') : 'events';
+    return `${nodeRef} replayed queued ${eventType.toLowerCase()} (${formatDelayLabel(incident.delayMs)})`;
   }
   return shortId;
 }
@@ -77,28 +113,55 @@ export default function App() {
 
   // 브로커 주소 입력 state
   const [urlInput, setUrlInput] = useState(brokerUrl);
+  const eventLogRef = useRef(null);
+  const [nodeAliases, setNodeAliases] = useState(loadNodeAliases);
+  const [isAliasModalOpen, setIsAliasModalOpen] = useState(false);
+  const [aliasDrafts, setAliasDrafts] = useState({});
+  const seenEdgeAliasKeysRef = useRef(new Set());
 
   useEffect(() => {
     setUrlInput(brokerUrl);
   }, [brokerUrl]);
 
+  useEffect(() => {
+    try {
+      globalThis.localStorage?.setItem(NODE_ALIAS_STORAGE_KEY, JSON.stringify(nodeAliases));
+    } catch {
+      // ignore storage failures in private browsing / restricted environments
+    }
+  }, [nodeAliases]);
+
   // 노드 선택 state
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const selectedNode = topology?.nodes.find(n => n.id === selectedNodeId) ?? null;
+  const nodeDisplayMap = buildNodePresentationMap(topology, nodeAliases);
+  const selectedNodeDisplay = selectedNode ? nodeDisplayMap.get(selectedNode.id) ?? null : null;
+  const edgeNodes = (topology?.nodes ?? [])
+    .filter(node => node.role !== 'CORE')
+    .sort((left, right) => {
+      const leftNumber = nodeDisplayMap.get(left.id)?.edgeNumber ?? Number.MAX_SAFE_INTEGER;
+      const rightNumber = nodeDisplayMap.get(right.id)?.edgeNumber ?? Number.MAX_SAFE_INTEGER;
+      return leftNumber - rightNumber;
+    });
+  const edgeNodeIdsKey = edgeNodes.map(node => node.id).join('|');
 
   // 필터 state
   const [filterType,     setFilterType]     = useState('ALL');
   const [filterBuilding, setFilterBuilding] = useState('ALL');
+  const [filterSourceId, setFilterSourceId] = useState('ALL');
   const [filterHighOnly, setFilterHighOnly] = useState(false);
 
   // 필터 옵션 (수신된 events에서 동적 추출)
+  const nodeById = new Map((topology?.nodes ?? []).map(node => [node.id, node]));
   const eventTypes = ['ALL', ...new Set(events.map(e => e.type).filter(Boolean))];
   const buildings  = ['ALL', ...new Set(events.map(e => e.payload?.building_id).filter(Boolean))];
+  const sourceNodes = ['ALL', ...new Set(events.map(e => e.source?.id).filter(Boolean))];
 
   // 필터 적용
   const filteredEvents = events.filter(e => {
     if (filterType     !== 'ALL' && e.type                  !== filterType)     return false;
     if (filterBuilding !== 'ALL' && e.payload?.building_id  !== filterBuilding) return false;
+    if (filterSourceId !== 'ALL' && e.source?.id            !== filterSourceId) return false;
     if (filterHighOnly && e.priority !== 'HIGH')                                return false;
     return true;
   });
@@ -107,7 +170,93 @@ export default function App() {
   const onlineCount   = topology?.nodes.filter(n => n.status === 'ONLINE').length  ?? 0;
   const offlineCount  = topology?.nodes.filter(n => n.status === 'OFFLINE').length ?? 0;
   const criticalCount = events.filter(e => e.priority === 'HIGH').length;
-  const latestCoreIncident = incidents.find(incident => incident.role === 'CORE') ?? null;
+  const latestIncident = incidents[0] ?? null;
+
+  function scrollToEventLog() {
+    eventLogRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function toggleCriticalFilter() {
+    setFilterHighOnly(prev => !prev);
+    scrollToEventLog();
+  }
+
+  function openAliasModal() {
+    setAliasDrafts(() => {
+      const nextDrafts = {};
+      edgeNodes.forEach((node) => {
+        nextDrafts[getNodeAliasKey(node)] = resolveNodeAlias(node, nodeAliases);
+      });
+      return nextDrafts;
+    });
+    setIsAliasModalOpen(true);
+  }
+
+  function closeAliasModal() {
+    setIsAliasModalOpen(false);
+  }
+
+  function saveAliasModal() {
+    setNodeAliases(prev => {
+      const next = { ...prev };
+      edgeNodes.forEach((node) => {
+        const aliasKey = getNodeAliasKey(node);
+        const alias = (aliasDrafts[aliasKey] ?? '').trim();
+        delete next[node.id];
+        if (alias) next[aliasKey] = alias;
+        else delete next[aliasKey];
+      });
+      return next;
+    });
+    setIsAliasModalOpen(false);
+  }
+
+  useEffect(() => {
+    if (!isAliasModalOpen) return;
+
+    setAliasDrafts(prev => {
+      const nextDrafts = {};
+      edgeNodes.forEach((node) => {
+        const aliasKey = getNodeAliasKey(node);
+        nextDrafts[aliasKey] = prev[aliasKey] ?? resolveNodeAlias(node, nodeAliases);
+      });
+      return nextDrafts;
+    });
+  }, [isAliasModalOpen, edgeNodeIdsKey, nodeAliases]);
+
+  useEffect(() => {
+    if (edgeNodes.length === 0) return;
+
+    const unseenKeys = edgeNodes
+      .map(node => getNodeAliasKey(node))
+      .filter(aliasKey => aliasKey && !seenEdgeAliasKeysRef.current.has(aliasKey));
+
+    if (unseenKeys.length === 0) return;
+
+    unseenKeys.forEach(aliasKey => seenEdgeAliasKeysRef.current.add(aliasKey));
+
+    const hasUnnamedEdge = edgeNodes.some((node) => {
+      const aliasKey = getNodeAliasKey(node);
+      return unseenKeys.includes(aliasKey) && !resolveNodeAlias(node, nodeAliases);
+    });
+
+    if (hasUnnamedEdge) {
+      openAliasModal();
+    }
+  }, [edgeNodeIdsKey, nodeAliases]);
+
+  useEffect(() => {
+    if (!isAliasModalOpen) return undefined;
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setIsAliasModalOpen(false);
+      }
+    };
+
+    globalThis.addEventListener?.('keydown', handleKeyDown);
+    return () => globalThis.removeEventListener?.('keydown', handleKeyDown);
+  }, [isAliasModalOpen]);
 
   return (
     <div className="monitor">
@@ -180,19 +329,25 @@ export default function App() {
           <span className="stat-value">{events.length}</span>
           <span className="stat-label">Events</span>
         </div>
-        <div className="stat-card">
+        <button
+          type="button"
+          className={`stat-card stat-card--button ${filterHighOnly ? 'stat-card--active' : ''}`}
+          onClick={toggleCriticalFilter}
+          aria-pressed={filterHighOnly}
+        >
           <span className="stat-value stat-value--orange">{criticalCount}</span>
           <span className="stat-label">Critical</span>
-        </div>
+          <span className="stat-hint">{filterHighOnly ? 'Filtered' : 'Click to filter'}</span>
+        </button>
       </div>
 
-      {(latestCoreIncident || incidents.length > 0) && (
+      {(latestIncident || incidents.length > 0) && (
         <section className="incident-section">
           <div className="incident-header">
             <h2>System Notices</h2>
-            {latestCoreIncident && (
+            {latestIncident && (
               <span className="incident-summary">
-                {formatIncidentText(latestCoreIncident)} at {formatIncidentTime(latestCoreIncident.ts)}
+                {formatIncidentText(latestIncident, nodeDisplayMap)} at {formatIncidentTime(latestIncident.ts)}
               </span>
             )}
           </div>
@@ -202,7 +357,7 @@ export default function App() {
                 <span className={`badge ${INCIDENT_BADGE[incident.type] ?? 'badge--gray'}`}>
                   {incident.type.replace('_', ' ')}
                 </span>
-                <span className="incident-text">{formatIncidentText(incident)}</span>
+                <span className="incident-text">{formatIncidentText(incident, nodeDisplayMap)}</span>
                 <span className="incident-time">{formatIncidentTime(incident.ts)}</span>
               </div>
             ))}
@@ -212,8 +367,15 @@ export default function App() {
 
       {/* ── Cytoscape 토폴로지 그래프 ─────────────────────────── */}
       <section className="graph-section">
-        <h2>Topology{selectedNode ? ` — ${selectedNode.id.slice(0, 8)}… 선택됨` : ''}</h2>
-        <TopologyGraph topology={topology} onNodeClick={setSelectedNodeId} />
+        <div className="section-header">
+          <h2>Topology{selectedNode ? ` — ${selectedNodeDisplay?.listLabel ?? selectedNode.id.slice(0, 8)}` : ''}</h2>
+          {edgeNodes.length > 0 && (
+            <button type="button" className="section-btn" onClick={openAliasModal}>
+              Name Edges
+            </button>
+          )}
+        </div>
+        <TopologyGraph topology={topology} onNodeClick={setSelectedNodeId} nodeDisplayMap={nodeDisplayMap} />
 
         {/* 노드 상세 패널 */}
         {selectedNode && (
@@ -226,11 +388,15 @@ export default function App() {
                 {selectedNode.status}
               </span>
               <span className="node-detail-title" title={selectedNode.id}>
-                {selectedNode.id}
+                {selectedNodeDisplay?.listLabel ?? selectedNode.id}
               </span>
               <button className="node-detail-close" onClick={() => setSelectedNodeId(null)}>✕</button>
             </div>
             <div className="node-detail-body">
+              <span className="node-detail-kv"><span>UUID</span><code>{selectedNode.id}</code></span>
+              {selectedNodeDisplay?.listLabel && (
+                <span className="node-detail-kv"><span>Label</span><code>{selectedNodeDisplay.listLabel}</code></span>
+              )}
               <span className="node-detail-kv"><span>IP:Port</span><code>{selectedNode.ip}:{selectedNode.port}</code></span>
               <span className="node-detail-kv"><span>Hop to Core</span><code>{selectedNode.hop_to_core}</code></span>
             </div>
@@ -247,17 +413,24 @@ export default function App() {
           <div className="card-list">
             {topology
               ? sortNodes(topology.nodes).map(n => (
-                <div key={n.id} className={`broker-card broker-card--${n.status.toLowerCase()}`}>
+                <button
+                  type="button"
+                  key={n.id}
+                  className={`broker-card broker-card--button broker-card--${n.status.toLowerCase()} ${selectedNodeId === n.id ? 'broker-card--selected' : ''}`}
+                  onClick={() => setSelectedNodeId(n.id)}
+                >
                   <div className="broker-card-header">
                     <span className={`badge ${n.role === 'CORE' ? 'badge--purple' : 'badge--gray'}`}>{n.role}</span>
                     <span className={`badge ${n.status === 'ONLINE' ? 'badge--green' : 'badge--red'}`}>{n.status}</span>
                   </div>
-                  <div className="broker-card-id" title={n.id}>{n.id.slice(0, 8)}…</div>
+                  <div className="broker-card-id" title={n.id}>
+                    {nodeDisplayMap.get(n.id)?.listLabel ?? n.id.slice(0, 8)}
+                  </div>
                   <div className="broker-card-meta">
                     <span>{n.ip}:{n.port}</span>
                     <span>hop: {n.hop_to_core}</span>
                   </div>
-                </div>
+                </button>
               ))
               : <p className="empty">topology 수신 대기 중…</p>
             }
@@ -265,7 +438,7 @@ export default function App() {
         </section>
 
         {/* 실시간 이벤트 로그 */}
-        <section className="event-log">
+        <section ref={eventLogRef} className="event-log">
           <h2>Event Log ({filteredEvents.length}/{events.length})</h2>
 
           {/* 필터 컨트롤 */}
@@ -284,16 +457,32 @@ export default function App() {
             >
               {buildings.map(b => <option key={b} value={b}>{b === 'ALL' ? 'All buildings' : b}</option>)}
             </select>
+            <select
+              className="filter-select"
+              value={filterSourceId}
+              onChange={e => setFilterSourceId(e.target.value)}
+            >
+              {sourceNodes.map(nodeId => (
+                <option key={nodeId} value={nodeId}>
+                  {nodeId === 'ALL' ? 'All edges' : formatEventSourceOption(nodeId, nodeById.get(nodeId), nodeDisplayMap)}
+                </option>
+              ))}
+            </select>
             <button
               className={`filter-btn ${filterHighOnly ? 'filter-btn--active' : ''}`}
               onClick={() => setFilterHighOnly(v => !v)}
             >
               HIGH only
             </button>
-            {(filterType !== 'ALL' || filterBuilding !== 'ALL' || filterHighOnly) && (
+            {(filterType !== 'ALL' || filterBuilding !== 'ALL' || filterSourceId !== 'ALL' || filterHighOnly) && (
               <button
                 className="filter-btn filter-btn--reset"
-                onClick={() => { setFilterType('ALL'); setFilterBuilding('ALL'); setFilterHighOnly(false); }}
+                onClick={() => {
+                  setFilterType('ALL');
+                  setFilterBuilding('ALL');
+                  setFilterSourceId('ALL');
+                  setFilterHighOnly(false);
+                }}
               >
                 reset
               </button>
@@ -305,20 +494,105 @@ export default function App() {
             {events.length > 0 && filteredEvents.length === 0 && (
               <li className="empty">필터 조건에 맞는 이벤트 없음</li>
             )}
-            {filteredEvents.map(e => (
-              <li key={e.msg_id} className="event-item">
-                <span className="event-time">{e.timestamp?.slice(11, 19) ?? '—'}</span>
-                <span className={`badge ${EVENT_TYPE_COLOR[e.type] ?? 'badge--gray'}`}>{e.type}</span>
-                {e.priority === 'HIGH' && <span className="badge badge--red">HIGH</span>}
-                <span className="event-desc">
-                  [{e.payload?.building_id ?? '?'}] {e.payload?.description ?? ''}
-                </span>
-              </li>
-            ))}
+            {filteredEvents.map(e => {
+              const eventView = getEventPresentation(e, nodeById, nodeDisplayMap);
+
+              return (
+                <li key={e.msg_id}>
+                  <button
+                    type="button"
+                    className={`event-item event-item--${e.type?.toLowerCase() ?? 'unknown'} ${e._buffered ? 'event-item--buffered' : ''}`}
+                    onClick={() => {
+                      if (eventView.sourceId) setSelectedNodeId(eventView.sourceId);
+                    }}
+                  >
+                    <div className="event-header">
+                      <span className="event-time">{formatEventTime(e.timestamp)}</span>
+                      <span className={`badge ${EVENT_TYPE_COLOR[e.type] ?? 'badge--gray'}`}>{e.type}</span>
+                      {e.priority === 'HIGH' && <span className="badge badge--red">HIGH</span>}
+                      {e._buffered && <span className="badge badge--purple">BUFFERED</span>}
+                      <span className="event-source-chip">
+                        {eventView.edgeLabel}
+                      </span>
+                    </div>
+
+                    <div className="event-title-row">
+                      <strong className="event-title">{eventView.sourceTitle}</strong>
+                    </div>
+                    <div className="event-location">{eventView.locationLabel}</div>
+
+                    <div className="event-meta">
+                      {eventView.sourceEndpoint && <span>{eventView.sourceEndpoint}</span>}
+                      {e._buffered && <span>received {formatClockTime(e._receivedAt)}</span>}
+                      {e._buffered && <span>{formatDelayLabel(e._delayMs)}</span>}
+                      {eventView.descriptionLabel && <span>{eventView.descriptionLabel}</span>}
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </section>
 
       </div>
+
+      {isAliasModalOpen && (
+        <div className="modal-backdrop" onClick={closeAliasModal}>
+          <div
+            className="alias-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edge-alias-modal-title"
+            onClick={event => event.stopPropagation()}
+          >
+            <div className="alias-modal-header">
+              <div>
+                <h2 id="edge-alias-modal-title">Edge Labels</h2>
+                <p className="alias-modal-subtitle">
+                  Give each edge a demo-friendly name. Edge numbers stay fixed and the labels will appear in the graph and event log.
+                </p>
+              </div>
+              <button type="button" className="alias-modal-close" onClick={closeAliasModal}>✕</button>
+            </div>
+
+            <div className="alias-modal-list">
+              {edgeNodes.map((node) => {
+                const display = nodeDisplayMap.get(node.id);
+                return (
+                  <label key={node.id} className="alias-modal-row">
+                    <div className="alias-modal-row-head">
+                      <span className="badge badge--purple">{display?.edgeLabel ?? 'EDGE'}</span>
+                      <strong>{display?.alias || display?.endpoint || node.ip || node.id.slice(0, 8)}</strong>
+                    </div>
+                    <span className="alias-modal-row-meta">
+                      {node.ip}:{node.port} · {node.id.slice(0, 8)}…
+                    </span>
+                    <input
+                      className="alias-modal-input"
+                      value={aliasDrafts[getNodeAliasKey(node)] ?? ''}
+                      onChange={event => {
+                        const value = event.target.value;
+                        const aliasKey = getNodeAliasKey(node);
+                        setAliasDrafts(prev => ({ ...prev, [aliasKey]: value }));
+                      }}
+                      placeholder="예: 공학관 1층"
+                    />
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="alias-modal-actions">
+              <button type="button" className="section-btn section-btn--ghost" onClick={closeAliasModal}>
+                Later
+              </button>
+              <button type="button" className="section-btn" onClick={saveAliasModal}>
+                Save Labels
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

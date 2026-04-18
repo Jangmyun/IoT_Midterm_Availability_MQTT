@@ -799,10 +799,13 @@ int main(int argc, char* argv[])
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
-    // 1. edge_id UUID 생성
+    // 1. 기본 컨텍스트 초기화
     EdgeContext ctx{};
-    uuid_generate(ctx.edge_id);
     ctx.node_port = (uint16_t)broker_port; // 인접 노드들이 접속할 로컬 포트
+    if (const char* ep = std::getenv("EDGE_NODE_PORT")) {
+        int p = std::atoi(ep);
+        if (p > 0 && p <= 65535) ctx.node_port = (uint16_t)p;
+    }
     ctx.mosq_core = nullptr;
     ctx.mosq_backup = nullptr;
     ctx.core_connected = false;
@@ -818,15 +821,25 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // 3. 로컬 CT 초기화 (core로부터 수신 전 빈 상태)
+    // 3. edge_id는 endpoint 기준으로 고정한다.
+    // 재시작 후에도 같은 edge를 같은 노드로 식별해야 client alias/CT 매핑이 안정적이다.
+    {
+        const char* suffix = std::getenv("EDGE_ID_SUFFIX");
+        char edge_seed[64];
+        std::snprintf(edge_seed, sizeof(edge_seed), "edge:%s:%u%s", 
+            ctx.node_ip, ctx.node_port, suffix ? suffix : "");
+        uuid_generate_deterministic(edge_seed, ctx.edge_id);
+    }
+
+    // 4. 로컬 CT 초기화 (core로부터 수신 전 빈 상태)
     ConnectionTableManager ct_manager;
     ctx.ct_manager = &ct_manager;
     ct_manager.init("", "");
 
-    // 4. mosquitto 초기화
+    // 5. mosquitto 초기화
     mosquitto_lib_init();
 
-    // 5. core 연결용 클라이언트 생성
+    // 6. core 연결용 클라이언트 생성
     struct mosquitto* mosq_core = mosquitto_new(ctx.edge_id, true, &ctx);
     if (!mosq_core)
     {
@@ -836,7 +849,7 @@ int main(int argc, char* argv[])
     }
     ctx.mosq_core = mosq_core;
 
-    // 5-1. local broker 연결용 클라이언트 생성
+    // 6-1. local broker 연결용 클라이언트 생성
     char local_client_id[64];
     std::snprintf(local_client_id, sizeof(local_client_id), "%s-local", ctx.edge_id);
 
@@ -849,7 +862,7 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // 5-2. backup core 연결용 클라이언트 생성
+    // 6-2. backup core 연결용 클라이언트 생성
     struct mosquitto* mosq_backup = nullptr;
     if (backup_core_ip[0] != '\0')
     {
@@ -868,7 +881,7 @@ int main(int argc, char* argv[])
         ctx.mosq_backup = mosq_backup;
     }
 
-    // 6. LWT 설정 (W-02): 비정상 종료 시 active core가 OFFLINE 처리
+    // 7. LWT 설정 (W-02): 비정상 종료 시 active core가 OFFLINE 처리
     {
         char lwt_topic[128];
         std::snprintf(lwt_topic, sizeof(lwt_topic), "%s%s",
@@ -882,7 +895,7 @@ int main(int argc, char* argv[])
     // standby backup 연결에는 node LWT를 두지 않는다.
     // edge liveness의 authoritative source 는 active core 경로다.
 
-    // 7. 콜백 등록
+    // 8. 콜백 등록
     mosquitto_connect_callback_set(mosq_core, on_connect_core);
     mosquitto_message_callback_set(mosq_core, on_message_core);
     mosquitto_disconnect_callback_set(mosq_core, on_disconnect_core);
@@ -898,7 +911,7 @@ int main(int argc, char* argv[])
         mosquitto_disconnect_callback_set(mosq_backup, on_disconnect_backup);
     }
 
-    // 8. Core 브로커 연결 (auto-reconnect 활성화)
+    // 9. Core 브로커 연결 (auto-reconnect 활성화)
     mosquitto_reconnect_delay_set(mosq_core, 2, 30, false);
     int rc = mosquitto_connect(mosq_core, core_ip, core_port, 60);
     if (rc != MOSQ_ERR_SUCCESS)
@@ -913,7 +926,7 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // 8-1. Local Broker 연결
+    // 9-1. Local Broker 연결
     mosquitto_reconnect_delay_set(mosq_local, 2, 30, false);
     int rc_local = mosquitto_connect(mosq_local, broker_host, broker_port, 60);
     if (rc_local != MOSQ_ERR_SUCCESS)
@@ -928,7 +941,7 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // 8-2. Backup Core 연결
+    // 9-2. Backup Core 연결
     if (mosq_backup)
     {
         mosquitto_reconnect_delay_set(mosq_backup, 2, 30, false);
@@ -944,7 +957,7 @@ int main(int argc, char* argv[])
         }
     }
 
-    // 9. 이벤트 루프 시작
+    // 10. 이벤트 루프 시작
     mosquitto_loop_start(mosq_core);
     mosquitto_loop_start(mosq_local);
     if (mosq_backup)

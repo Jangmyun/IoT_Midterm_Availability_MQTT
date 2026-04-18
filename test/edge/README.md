@@ -15,6 +15,10 @@ core_broker도 함께 실행하여 실제 연동 흐름을 검증합니다.
 |---|---|---|
 | EDGE-01 | `01_ping_pong.sh` | `campus/monitor/ping/<edge_id>` 발행 → edge가 `campus/monitor/pong/<requester_id>` 응답 |
 | EDGE-02 | `02_lwt.sh` | edge 강제 종료(SIGKILL) → `campus/will/node/<edge_id>` LWT 발행 확인 |
+| EDGE-03 | `03_core_switch.sh` | `campus/alert/core_switch` 수신 → edge가 새 Active Core로 재연결 시도 |
+| EDGE-04 | `04_ct_active_core_change.sh` | topology의 `active_core_id` 변경 수신 → edge가 새 Core IP:Port로 재연결 |
+| EDGE-05 | `05_rtt_relay.sh` | Edge 2대 등록 → Ping/Pong RTT 계산 → relay node 선택 + peer OFFLINE 전파 확인 |
+| EDGE-06 | `06_store_and_forward.sh` | upstream broker 단절 중 로컬 이벤트 큐 저장 → 재연결 후 queued event flush |
 
 ## 테스트 흐름
 
@@ -42,6 +46,8 @@ EDGE-02
 ```bash
 BUILD_DIR=./broker/build ./test/test_pub.sh edge_ping_pong
 BUILD_DIR=./broker/build ./test/test_pub.sh edge_lwt
+BUILD_DIR=./broker/build ./test/test_pub.sh edge_rtt_relay
+BUILD_DIR=./broker/build ./test/test_pub.sh edge_store_forward
 
 # 전체
 BUILD_DIR=./broker/build ./test/test_pub.sh all_edge

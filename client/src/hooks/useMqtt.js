@@ -13,6 +13,8 @@ import {
 const MAX_EVENTS = 50;
 const MAX_ALERTS = 20;
 const ALERT_TTL_MS = 5000;
+const BUFFERED_EVENT_THRESHOLD_MS = 5000;
+const BUFFERED_INCIDENT_COOLDOWN_MS = 8000;
 
 /**
  * MQTT WebSocket 연결 + 전체 토픽 구독 + JSON 파싱 + Core 재연결
@@ -46,6 +48,7 @@ export function useMqtt() {
   const hiddenNodeIdsRef   = useRef(new Set());
   // failover 이벤트(LWT/core_switch) 수신 시 true → 다음 CT 한 번은 버전 가드 무시
   const forceAcceptNextRef = useRef(false);
+  const bufferedIncidentSeenAtRef = useRef(new Map());
 
   useEffect(() => {
     const pushIncident = (incident) => {
@@ -129,7 +132,39 @@ export function useMqtt() {
         // msg_id 중복 제거
         if (seenMsgIds.current.has(parsed.msg_id)) return;
         seenMsgIds.current.add(parsed.msg_id);
-        setEvents(prev => [{ ...parsed, _topic: topic }, ...prev].slice(0, MAX_EVENTS));
+
+        const receivedAt = Date.now();
+        const eventTimestampMs = Date.parse(parsed.timestamp ?? '');
+        const delayMs = Number.isFinite(eventTimestampMs)
+          ? Math.max(0, receivedAt - eventTimestampMs)
+          : 0;
+        const buffered = delayMs >= BUFFERED_EVENT_THRESHOLD_MS;
+
+        if (buffered) {
+          const sourceId = parsed.source?.id ?? '';
+          const cooldownKey = sourceId || parsed.msg_id;
+          const lastSeenAt = bufferedIncidentSeenAtRef.current.get(cooldownKey) ?? 0;
+          if (receivedAt - lastSeenAt >= BUFFERED_INCIDENT_COOLDOWN_MS) {
+            bufferedIncidentSeenAtRef.current.set(cooldownKey, receivedAt);
+            pushIncident({
+              key: `buffered:${cooldownKey}:${receivedAt}`,
+              type: 'BUFFERED_EVENTS',
+              role: 'NODE',
+              nodeId: sourceId,
+              eventType: parsed.type,
+              delayMs,
+              ts: receivedAt,
+            });
+          }
+        }
+
+        setEvents(prev => [{
+          ...parsed,
+          _topic: topic,
+          _receivedAt: receivedAt,
+          _delayMs: delayMs,
+          _buffered: buffered,
+        }, ...prev].slice(0, MAX_EVENTS));
         return;
       }
 
@@ -245,6 +280,12 @@ export function useMqtt() {
           const reconnectNode = resolveBackupReconnectTarget(previousTopology);
           if (reconnectNode?.ip) {
             reconnectToBrokerHost(reconnectNode.ip, 'W-01');
+            return;
+          }
+
+          const nextEndpoint = parseBrokerEndpoint(parsed?.payload?.description ?? '');
+          if (nextEndpoint?.host) {
+            reconnectToBrokerHost(nextEndpoint.host, 'W-01');
           }
         }
         return;
