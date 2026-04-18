@@ -109,6 +109,9 @@ static void stop_peer_channel_after_promotion(CoreContext* ctx) {
         return;
     }
 
+    // 주의: 콜백 컨텍스트 안에서 호출되므로 loop_stop 은 부르지 않는다.
+    // (자기 자신의 loop 스레드를 stop 하면 deadlock 위험.)
+    // 실제 정리는 main() 종료부에서 loop_stop(..., true) + destroy 로 수행한다.
     mosquitto_disconnect(ctx->mosq_peer);
 }
 
@@ -367,6 +370,8 @@ static void on_message(struct mosquitto* mosq, void* userdata,
             if (ctx->election_votes >= 1) {
                 ConnectionTable snapshot = ctx->ct_manager->snapshot();
                 promote_core_after_failover(*ctx->ct_manager, ctx->core_id, snapshot.active_core_id);
+                // is_backup 플래그를 먼저 내려야 on_ct_changed 가 active 경로(publish_ct_sync)로 분기한다.
+                ctx->is_backup = false;
                 on_ct_changed(mosq, ctx);
 
                 // core_switch 발행 → Edge들이 수신하여 새 Active Core로 전환
@@ -378,13 +383,17 @@ static void on_message(struct mosquitto* mosq, void* userdata,
                 snprintf(sw.payload.description, DESCRIPTION_LEN,
                     "%s:%d", ctx->core_ip, ctx->core_port);
                 std::string sw_json = mqtt_message_to_json(sw);
-                mosquitto_publish(mosq, nullptr, "campus/alert/core_switch",
+                int mid = 0;
+                int rc = mosquitto_publish(mosq, &mid, "campus/alert/core_switch",
                     (int)sw_json.size(), sw_json.c_str(), 1, false);
+                if (rc != MOSQ_ERR_SUCCESS) {
+                    fprintf(stderr, "[core] core_switch publish failed: %s\n",
+                        mosquitto_strerror(rc));
+                }
 
-                ctx->is_backup = false;
                 ctx->election_votes = 0;
                 ctx->election_voters.clear();
-                printf("[core] elected as ACTIVE (election complete), core_switch sent\n");
+                printf("[core] elected as ACTIVE (election complete), core_switch sent (mid=%d)\n", mid);
             }
         }
         return;
@@ -478,8 +487,11 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
             publish_active_view(mosq, ctx);
         }
 
-        // campus/alert/core_switch 를 Active 브로커에 발행
-        // (Edges는 Active 브로커에 연결되어 있으므로 거기서 수신)
+        // campus/alert/core_switch 를 자신(= 새 Active) 브로커에 발행한다.
+        // 주의: 기존 Active 브로커(= mosq_peer 가 붙어있던 곳)는 방금 죽었으므로
+        // 그쪽으로 publish 하면 메시지는 송신 큐에만 쌓이고 네트워크로는 나가지 않는다.
+        // Edge 들은 campus/alert/core_switch 수신 후 payload.description 에 담긴
+        // 새 Active(= 자신) 로 재연결하므로, 반드시 자기 자신의 브로커에 발행해야 한다.
         MqttMessage sw = {};
         uuid_generate(sw.msg_id);
         sw.type = MSG_TYPE_STATUS;
@@ -489,11 +501,17 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
             "%s:%d", ctx->core_ip, ctx->core_port);
 
         std::string sw_json = mqtt_message_to_json(sw);
-        mosquitto_publish(mosq, nullptr, "campus/alert/core_switch",
+        int mid = 0;
+        int rc = mosquitto_publish(ctx->mosq_self, &mid, "campus/alert/core_switch",
             (int)sw_json.size(), sw_json.c_str(), 1, false);
+        if (rc != MOSQ_ERR_SUCCESS) {
+            fprintf(stderr, "[core/backup] core_switch publish failed: %s\n",
+                mosquitto_strerror(rc));
+        }
 
         stop_peer_channel_after_promotion(ctx);
-        printf("[core/backup] core_switch sent: %s:%d\n", ctx->core_ip, ctx->core_port);
+        printf("[core/backup] core_switch sent on self broker (mid=%d): %s:%d\n",
+            mid, ctx->core_ip, ctx->core_port);
         return;
     }
 
@@ -521,7 +539,7 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
         return;
     }
 
-    // peer 브로커에서 Election 결과 수신 (C-04): 집계 → 과반 시 peer 브로커에 core_switch 발행
+    // peer 브로커에서 Election 결과 수신 (C-04): 집계 → 과반 시 자신 브로커에 core_switch 발행
     if (strcmp(msg->topic, TOPIC_ELECTION_RESULT) == 0) {
         MqttMessage res = {};
         std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
@@ -545,7 +563,8 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
                 if (mosq != ctx->mosq_self) {
                     publish_active_view(mosq, ctx);
                 }
-                // peer 브로커(Edge들이 연결된 브로커)에 core_switch 발행
+                // core_switch 는 자기 자신의 브로커에 발행해야 한다.
+                // Edge 들이 붙게 될 새 Active 브로커가 바로 여기이기 때문이다.
                 MqttMessage sw = {};
                 uuid_generate(sw.msg_id);
                 sw.type = MSG_TYPE_STATUS;
@@ -554,13 +573,19 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
                 snprintf(sw.payload.description, DESCRIPTION_LEN,
                     "%s:%d", ctx->core_ip, ctx->core_port);
                 std::string sw_json = mqtt_message_to_json(sw);
-                mosquitto_publish(mosq, nullptr, "campus/alert/core_switch",
+                int mid = 0;
+                int rc = mosquitto_publish(ctx->mosq_self, &mid, "campus/alert/core_switch",
                     (int)sw_json.size(), sw_json.c_str(), 1, false);
+                if (rc != MOSQ_ERR_SUCCESS) {
+                    fprintf(stderr, "[core/backup] core_switch publish failed: %s\n",
+                        mosquitto_strerror(rc));
+                }
 
                 ctx->election_votes = 0;
                 ctx->election_voters.clear();
                 stop_peer_channel_after_promotion(ctx);
-                printf("[core/backup] elected as ACTIVE via peer election, core_switch sent\n");
+                printf("[core/backup] elected as ACTIVE via peer election, core_switch sent on self broker (mid=%d)\n",
+                    mid);
             }
         }
         return;
