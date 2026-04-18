@@ -5,11 +5,11 @@ import { buildPresentationTopology, reconcileHiddenNodeIds } from '../mqtt/topol
 import {
   buildBrokerUrl,
   parseBrokerEndpoint,
+  resolveInitialBrokerUrl,
   resolveBackupReconnectTarget,
   selectPromotedActiveNode,
 } from '../mqtt/failover.js';
 
-const DEFAULT_URL = import.meta.env.VITE_MQTT_URL ?? 'ws://localhost:9001';
 const MAX_EVENTS = 50;
 const MAX_ALERTS = 20;
 const ALERT_TTL_MS = 5000;
@@ -25,7 +25,9 @@ const ALERT_TTL_MS = 5000;
  * }}
  */
 export function useMqtt() {
-  const [brokerUrl, setBrokerUrl]       = useState(DEFAULT_URL);
+  const [brokerUrl, setBrokerUrl]       = useState(() => (
+    resolveInitialBrokerUrl(import.meta.env.VITE_MQTT_URL, globalThis.location)
+  ));
   const [status, setStatus]             = useState('connecting');
   const [topology, setTopology]         = useState(null);
   const [events, setEvents]             = useState([]);

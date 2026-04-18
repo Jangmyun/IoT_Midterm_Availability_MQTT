@@ -1,5 +1,32 @@
 const DEFAULT_WS_PORT = '9001';
+const DEFAULT_LOCAL_BROKER_URL = `ws://localhost:${DEFAULT_WS_PORT}`;
 const LOCAL_HOST_ALIASES = new Set(['localhost', '127.0.0.1']);
+
+export function formatBrokerHost(rawHost) {
+  if (typeof rawHost !== 'string') return '';
+
+  const host = rawHost.trim();
+  if (!host) return '';
+  if (host.startsWith('[') && host.endsWith(']')) return host;
+
+  return host.includes(':') ? `[${host}]` : host;
+}
+
+export function resolveInitialBrokerUrl(configuredUrl, locationLike = null) {
+  if (typeof configuredUrl === 'string' && configuredUrl.trim()) {
+    return configuredUrl.trim();
+  }
+
+  const pageHost = typeof locationLike?.hostname === 'string'
+    ? locationLike.hostname.trim()
+    : '';
+  if (!pageHost) {
+    return DEFAULT_LOCAL_BROKER_URL;
+  }
+
+  const protocol = locationLike?.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${formatBrokerHost(pageHost)}:${DEFAULT_WS_PORT}`;
+}
 
 export function parseBrokerUrl(rawUrl) {
   try {
@@ -57,8 +84,9 @@ export function buildBrokerUrl(currentUrl, nextHost, nextPort) {
   const parsed = parseBrokerUrl(currentUrl);
   const protocol = parsed?.protocol || 'ws:';
   const port = String(nextPort || parsed?.port || DEFAULT_WS_PORT);
+  const host = formatBrokerHost(nextHost);
 
-  return `${protocol}//${nextHost.trim()}:${port}`;
+  return `${protocol}//${host}:${port}`;
 }
 
 export function findNodeById(nodes, nodeId) {

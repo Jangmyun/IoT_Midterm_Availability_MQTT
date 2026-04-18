@@ -124,7 +124,7 @@ export default function App() {
             className="broker-url-input"
             value={urlInput}
             onChange={e => setUrlInput(e.target.value)}
-            placeholder="ws://localhost:9001"
+            placeholder="ws://<current-host>:9001"
             spellCheck={false}
           />
           <button className="broker-url-btn" type="submit">Connect</button>
