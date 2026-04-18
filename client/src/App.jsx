@@ -14,10 +14,53 @@ const EVENT_TYPE_COLOR = {
   RELAY:        'badge--gray',
 };
 
+const INCIDENT_BADGE = {
+  ACTIVE_CORE_DOWN: 'badge--red',
+  BACKUP_CORE_DOWN: 'badge--orange',
+  CORE_DOWN: 'badge--red',
+  FAILOVER_SWITCH: 'badge--purple',
+  EDGE_DOWN: 'badge--orange',
+  EDGE_UP: 'badge--green',
+};
+
 function reconnectReasonLabel(reason) {
   if (reason === 'W-01') return 'LWT';
   if (reason === 'M-04') return 'topology sync';
   return 'core_switch';
+}
+
+function formatIncidentTime(ts) {
+  if (!ts) return '—';
+  return new Date(ts).toLocaleTimeString('ko-KR', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function formatIncidentText(incident) {
+  const shortId = incident.nodeId ? `${incident.nodeId.slice(0, 8)}…` : '(unknown)';
+
+  if (incident.type === 'CORE_DOWN') {
+    return `Core ${shortId} disconnected`;
+  }
+  if (incident.type === 'ACTIVE_CORE_DOWN') {
+    return `Active core ${shortId} disconnected`;
+  }
+  if (incident.type === 'BACKUP_CORE_DOWN') {
+    return `Backup core ${shortId} disconnected`;
+  }
+  if (incident.type === 'FAILOVER_SWITCH') {
+    return `Backup promoted to active${incident.endpoint ? ` (${incident.endpoint})` : ''}`;
+  }
+  if (incident.type === 'EDGE_DOWN') {
+    return `Edge ${shortId} disconnected`;
+  }
+  if (incident.type === 'EDGE_UP') {
+    return `Edge ${shortId} recovered`;
+  }
+  return shortId;
 }
 
 // nodes를 CORE 우선 → ONLINE → OFFLINE 순으로 정렬
@@ -30,7 +73,7 @@ function sortNodes(nodes) {
 }
 
 export default function App() {
-  const { status, topology, events, alerts, reconnectInfo, brokerUrl, setBrokerUrl } = useMqtt();
+  const { status, topology, events, alerts, incidents, reconnectInfo, brokerUrl, setBrokerUrl } = useMqtt();
 
   // 브로커 주소 입력 state
   const [urlInput, setUrlInput] = useState(brokerUrl);
@@ -64,6 +107,7 @@ export default function App() {
   const onlineCount   = topology?.nodes.filter(n => n.status === 'ONLINE').length  ?? 0;
   const offlineCount  = topology?.nodes.filter(n => n.status === 'OFFLINE').length ?? 0;
   const criticalCount = events.filter(e => e.priority === 'HIGH').length;
+  const latestCoreIncident = incidents.find(incident => incident.role === 'CORE') ?? null;
 
   return (
     <div className="monitor">
@@ -80,7 +124,7 @@ export default function App() {
             className="broker-url-input"
             value={urlInput}
             onChange={e => setUrlInput(e.target.value)}
-            placeholder="ws://localhost:9001"
+            placeholder="ws://<current-host>:9001"
             spellCheck={false}
           />
           <button className="broker-url-btn" type="submit">Connect</button>
@@ -141,6 +185,30 @@ export default function App() {
           <span className="stat-label">Critical</span>
         </div>
       </div>
+
+      {(latestCoreIncident || incidents.length > 0) && (
+        <section className="incident-section">
+          <div className="incident-header">
+            <h2>System Notices</h2>
+            {latestCoreIncident && (
+              <span className="incident-summary">
+                {formatIncidentText(latestCoreIncident)} at {formatIncidentTime(latestCoreIncident.ts)}
+              </span>
+            )}
+          </div>
+          <div className="incident-list">
+            {incidents.slice(0, 5).map((incident) => (
+              <div key={incident.key} className="incident-item">
+                <span className={`badge ${INCIDENT_BADGE[incident.type] ?? 'badge--gray'}`}>
+                  {incident.type.replace('_', ' ')}
+                </span>
+                <span className="incident-text">{formatIncidentText(incident)}</span>
+                <span className="incident-time">{formatIncidentTime(incident.ts)}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* ── Cytoscape 토폴로지 그래프 ─────────────────────────── */}
       <section className="graph-section">

@@ -37,6 +37,29 @@ static void handle_signal(int) { g_running = false; }
 
 // CT 발행 헬퍼 =====================================================
 
+static std::string build_core_lwt_json(const char* core_id) {
+    MqttMessage lwt = {};
+    uuid_generate(lwt.msg_id);
+    lwt.type = MSG_TYPE_LWT_CORE;
+    lwt.source.role = NODE_ROLE_CORE;
+    std::strncpy(lwt.source.id, core_id, UUID_LEN - 1);
+    lwt.source.id[UUID_LEN - 1] = '\0';
+    lwt.delivery = { 1, false, false };
+    return mqtt_message_to_json(lwt);
+}
+
+static void publish_core_down_notice(struct mosquitto* mosq, const char* core_id) {
+    if (!mosq || !core_id || core_id[0] == '\0') {
+        return;
+    }
+
+    char topic[128];
+    std::snprintf(topic, sizeof(topic), "%s%s", TOPIC_LWT_CORE_PREFIX, core_id);
+    std::string lwt_json = build_core_lwt_json(core_id);
+    mosquitto_publish(mosq, nullptr, topic,
+        (int)lwt_json.size(), lwt_json.c_str(), 1, false);
+}
+
 // 자신 브로커의 TOPIC_TOPOLOGY 에 최신 CT 발행
 static void publish_topology(struct mosquitto* mosq, CoreContext* ctx) {
     ConnectionTable ct = ctx->ct_manager->snapshot();
@@ -79,6 +102,14 @@ static void publish_active_view(struct mosquitto* mosq, CoreContext* ctx) {
     }
     publish_topology(mosq, ctx);
     publish_ct_sync(mosq, ctx);
+}
+
+static void stop_peer_channel_after_promotion(CoreContext* ctx) {
+    if (!ctx || !ctx->mosq_peer) {
+        return;
+    }
+
+    mosquitto_disconnect(ctx->mosq_peer);
 }
 
 // Backup: TOPIC_NODE_REGISTER publish → Active 수신
@@ -159,6 +190,37 @@ static void on_message(struct mosquitto* mosq, void* userdata,
         return;
     }
 
+    // Backup Core 종료 감지: ACTIVE는 backup 상태를 CT와 client view에서 제거한다.
+    if (strncmp(msg->topic, "campus/will/core/", 17) == 0) {
+        const char* core_id = msg->topic + 17;
+        if (std::strcmp(core_id, ctx->core_id) == 0) {
+            return;
+        }
+
+        if (!ctx->is_backup) {
+            ConnectionTable snapshot = ctx->ct_manager->snapshot();
+            bool changed = false;
+
+            if (snapshot.backup_core_id[0] != '\0' &&
+                std::strncmp(snapshot.backup_core_id, core_id, UUID_LEN) == 0) {
+                ctx->ct_manager->setBackupCoreId("");
+                changed = true;
+            }
+
+            auto failed_core = ctx->ct_manager->findNode(core_id);
+            if (failed_core.has_value() && failed_core->status != NODE_STATUS_OFFLINE) {
+                changed = ctx->ct_manager->setNodeStatus(core_id, NODE_STATUS_OFFLINE) || changed;
+            }
+
+            if (changed) {
+                on_ct_changed(mosq, ctx);
+                printf("[core] peer core offline: %s  (ct.version=%d)\n",
+                    core_id, ctx->ct_manager->snapshot().version);
+            }
+        }
+        return;
+    }
+
     // Edge 등록 (M-03): CT에 추가 후 브로드캐스트
     if (strncmp(msg->topic, "campus/monitor/status/", 22) == 0) {
         MqttMessage reg = {};
@@ -180,10 +242,12 @@ static void on_message(struct mosquitto* mosq, void* userdata,
         node.status = NODE_STATUS_ONLINE;
         node.hop_to_core = 1;
 
+        bool changed = mark_duplicate_endpoint_nodes_offline(
+            *ctx->ct_manager, node.id, node.ip, node.port);
         auto existing = ctx->ct_manager->findNode(reg.source.id);
         if (existing && existing->status == NODE_STATUS_OFFLINE) {
             // Node 복구: OFFLINE → ONLINE (FR-13, A-02)
-            bool changed = ctx->ct_manager->setNodeStatus(reg.source.id, NODE_STATUS_ONLINE);
+            changed = ctx->ct_manager->updateNode(node) || changed;
             changed = ensure_link(ctx->ct_manager, ctx->core_id, reg.source.id) || changed;
             if (changed) {
                 on_ct_changed(mosq, ctx);
@@ -199,15 +263,21 @@ static void on_message(struct mosquitto* mosq, void* userdata,
             printf("[core] node recovered: %s  (ct.version=%d)\n", reg.source.id, ct.version);
         }
         else if (!existing) {
-            bool changed = ctx->ct_manager->addNode(node);
+            changed = ctx->ct_manager->addNode(node) || changed;
             changed = ensure_link(ctx->ct_manager, ctx->core_id, reg.source.id) || changed;
             if (changed) {
                 on_ct_changed(mosq, ctx);
             }
             printf("[core] edge registered: %s  %s:%d\n", node.id, node_ip, node_port);
         }
-        else if (ensure_link(ctx->ct_manager, ctx->core_id, reg.source.id)) {
-            on_ct_changed(mosq, ctx);
+        else {
+            if (!same_node_entry(*existing, node)) {
+                changed = ctx->ct_manager->updateNode(node) || changed;
+            }
+            changed = ensure_link(ctx->ct_manager, ctx->core_id, reg.source.id) || changed;
+            if (changed) {
+                on_ct_changed(mosq, ctx);
+            }
         }
         // else: already ONLINE, ignore duplicate
         return;
@@ -330,13 +400,18 @@ static void on_connect_peer(struct mosquitto* mosq, void* userdata, int rc) {
     }
     printf("[core/backup] connected to active broker\n");
 
+    auto* ctx = static_cast<CoreContext*>(userdata);
+    if (!ctx->is_backup) {
+        mosquitto_disconnect(mosq);
+        return;
+    }
+
     // Active의 CT + LWT + Election 구독
     mosquitto_subscribe(mosq, nullptr, TOPIC_CT_SYNC, 1);
     mosquitto_subscribe(mosq, nullptr, TOPIC_CORE_WILL_ALL, 1);
     mosquitto_subscribe(mosq, nullptr, TOPIC_ELECTION_ALL, 1);
 
     // Backup 자신의 노드 정보 전송 → Active가 merge
-    auto* ctx = static_cast<CoreContext*>(userdata);
     publish_node_register(ctx);
 }
 
@@ -348,6 +423,10 @@ static void on_disconnect_peer(struct mosquitto* /*mosq*/, void* /*userdata*/, i
 static void on_message_peer(struct mosquitto* mosq, void* userdata,
     const struct mosquitto_message* msg) {
     auto* ctx = static_cast<CoreContext*>(userdata);
+
+    if (!ctx->is_backup) {
+        return;
+    }
 
     // Active의 CT 수신 → merge → Backup의 own broker에 TOPOLOGY publish
     if (strcmp(msg->topic, TOPIC_CT_SYNC) == 0) {
@@ -383,9 +462,15 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
 
     // Active Core LWT 수신 (W-01): campus/alert/core_switch 발행 → Edge 재연결 유도
     if (strncmp(msg->topic, "campus/will/core/", 17) == 0) {
-        printf("[core/backup] active core down: %s — promoting self\n", msg->topic + 17);
+        const char* failed_core_id = msg->topic + 17;
+        if (!should_promote_backup_on_core_will(*ctx->ct_manager, ctx->core_id, failed_core_id)) {
+            printf("[core/backup] ignoring non-active core down: %s\n", failed_core_id);
+            return;
+        }
 
-        promote_core_after_failover(*ctx->ct_manager, ctx->core_id, msg->topic + 17);
+        printf("[core/backup] active core down: %s — promoting self\n", failed_core_id);
+
+        promote_core_after_failover(*ctx->ct_manager, ctx->core_id, failed_core_id);
         ctx->is_backup = false;
 
         publish_active_view(ctx->mosq_self, ctx);
@@ -407,6 +492,7 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
         mosquitto_publish(mosq, nullptr, "campus/alert/core_switch",
             (int)sw_json.size(), sw_json.c_str(), 1, false);
 
+        stop_peer_channel_after_promotion(ctx);
         printf("[core/backup] core_switch sent: %s:%d\n", ctx->core_ip, ctx->core_port);
         return;
     }
@@ -473,6 +559,7 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
 
                 ctx->election_votes = 0;
                 ctx->election_voters.clear();
+                stop_peer_channel_after_promotion(ctx);
                 printf("[core/backup] elected as ACTIVE via peer election, core_switch sent\n");
             }
         }
@@ -546,16 +633,10 @@ int main(int argc, char* argv[]) {
     // 5. LWT 설정 (W-01): 자신의 종료 알림 (payload에 backup 정보 불포함)
     //    Failover 신호는 Backup Core가 campus/alert/core_switch 로 전달
     {
-        MqttMessage lwt = {};
-        uuid_generate(lwt.msg_id);
-        lwt.type = MSG_TYPE_LWT_CORE;
-        lwt.source.role = NODE_ROLE_CORE;
-        strncpy(lwt.source.id, ctx.core_id, UUID_LEN - 1);
-
         char lwt_topic[128];
         snprintf(lwt_topic, sizeof(lwt_topic), "%s%s", TOPIC_LWT_CORE_PREFIX, ctx.core_id);
 
-        std::string lwt_json = mqtt_message_to_json(lwt);
+        std::string lwt_json = build_core_lwt_json(ctx.core_id);
         mosquitto_will_set(mosq, lwt_topic,
             (int)lwt_json.size(), lwt_json.c_str(), 1, false);
     }
@@ -597,6 +678,14 @@ int main(int argc, char* argv[]) {
             mosquitto_disconnect_callback_set(mosq_peer, on_disconnect_peer);
             mosquitto_reconnect_delay_set(mosq_peer, 2, 30, false);
 
+            {
+                char lwt_topic[128];
+                snprintf(lwt_topic, sizeof(lwt_topic), "%s%s", TOPIC_LWT_CORE_PREFIX, ctx.core_id);
+                std::string lwt_json = build_core_lwt_json(ctx.core_id);
+                mosquitto_will_set(mosq_peer, lwt_topic,
+                    (int)lwt_json.size(), lwt_json.c_str(), 1, false);
+            }
+
             if (mosquitto_connect(mosq_peer, active_core_ip, active_core_port, 60)
                 == MOSQ_ERR_SUCCESS) {
                 mosquitto_loop_start(mosq_peer);
@@ -617,6 +706,14 @@ int main(int argc, char* argv[]) {
 
     // 8. 정상 종료
     printf("[core] shutting down\n");
+    publish_core_down_notice(mosq, ctx.core_id);
+    if (mosq_peer) {
+        publish_core_down_notice(mosq_peer, ctx.core_id);
+    }
+    {
+        struct timespec flush_ts = { 0, 250 * 1000 * 1000 };
+        nanosleep(&flush_ts, nullptr);
+    }
     if (mosq_peer) {
         mosquitto_loop_stop(mosq_peer, true);
         mosquitto_destroy(mosq_peer);

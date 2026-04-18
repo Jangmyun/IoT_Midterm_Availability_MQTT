@@ -1,12 +1,21 @@
 import { useEffect, useRef } from 'react';
 import cytoscape from 'cytoscape';
+import {
+  buildTopologyNodeLabel,
+  buildTopologyNodePositions,
+  classifyTopologyLink,
+  classifyTopologyNode,
+} from './topologyGraphModel.js';
 
 /**
  * TopologyGraph
  *
- * - CORE 노드: 보라색 다이아몬드
+ * - Active CORE: 더 크고 밝은 중심형 노드
+ * - Backup CORE: 한 단계 차분한 보조 노드
  * - NODE ONLINE: 초록
  * - NODE OFFLINE: 빨강(반투명)
+ * - Active Core 링크: 밝은 실선
+ * - Backup Core 링크: 청록 점선(standby)
  * - Edge 라벨: RTT(ms)
  * - 노드 클릭 시 onNodeClick(id) 호출
  * - 배경 클릭 시 onNodeClick(null) 호출
@@ -53,38 +62,85 @@ export default function TopologyGraph({ topology, onNodeClick }) {
           selector: 'node',
           style: {
             label: 'data(label)',
-            width: 34,
-            height: 34,
-            'background-color': '#4caf50',
+            width: 36,
+            height: 36,
+            shape: 'ellipse',
+            'background-color': '#57be5f',
             'border-width': 2,
-            'border-color': '#1f2937',
+            'border-color': '#182233',
             color: '#ffffff',
-            'font-size': 12,
+            'font-size': 11,
             'font-weight': 600,
             'text-valign': 'bottom',
             'text-halign': 'center',
-            'text-margin-y': 8,
-            'text-wrap': 'none',
+            'text-margin-y': 10,
+            'text-wrap': 'wrap',
             'text-max-width': 120,
+            'text-outline-width': 4,
+            'text-outline-color': '#0b1020',
+            'shadow-blur': 12,
+            'shadow-opacity': 0.28,
+            'shadow-color': '#020617',
             'overlay-opacity': 0,
           },
         },
         {
           selector: 'node[role = "CORE"]',
           style: {
-            shape: 'diamond',
-            width: 52,
-            height: 52,
-            'background-color': '#6366f1',
-            'border-width': 3,
-            'border-color': '#a5b4fc',
+            'font-size': 12,
+            'font-weight': 700,
+            'text-margin-y': 15,
+            'text-max-width': 140,
           },
         },
         {
-          selector: 'node[status = "OFFLINE"]',
+          selector: 'node[nodeKind = "active-core"]',
+          style: {
+            shape: 'round-octagon',
+            width: 76,
+            height: 76,
+            'background-color': '#6676ff',
+            'border-width': 4.5,
+            'border-color': '#eef2ff',
+            'shadow-color': '#4f5eff',
+            'shadow-opacity': 0.5,
+            'shadow-blur': 26,
+          },
+        },
+        {
+          selector: 'node[nodeKind = "backup-core"]',
+          style: {
+            shape: 'round-hexagon',
+            width: 58,
+            height: 58,
+            'background-color': '#1e5e67',
+            'border-width': 3,
+            'border-color': '#88d8d0',
+            'shadow-color': '#1aa7a1',
+            'shadow-opacity': 0.22,
+            'shadow-blur': 16,
+            opacity: 0.94,
+          },
+        },
+        {
+          selector: 'node[nodeKind = "core"]',
+          style: {
+            shape: 'round-diamond',
+            width: 60,
+            height: 60,
+            'background-color': '#6c748f',
+            'border-width': 3,
+            'border-color': '#d7def0',
+          },
+        },
+        {
+          selector: 'node[nodeKind = "offline-node"]',
           style: {
             'background-color': '#ef4444',
-            opacity: 0.6,
+            'border-color': '#fca5a5',
+            opacity: 0.72,
+            'shadow-color': '#ef4444',
+            'shadow-opacity': 0.2,
           },
         },
         {
@@ -98,8 +154,8 @@ export default function TopologyGraph({ topology, onNodeClick }) {
           selector: 'edge',
           style: {
             width: 3,
-            'line-color': '#4b5563',
-            'target-arrow-color': '#4b5563',
+            'line-color': '#516176',
+            'target-arrow-color': '#516176',
             'curve-style': 'bezier',
             label: 'data(rtt)',
             color: '#cbd5e1',
@@ -110,6 +166,26 @@ export default function TopologyGraph({ topology, onNodeClick }) {
             'text-background-padding': 3,
             'text-border-opacity': 0,
             'overlay-opacity': 0,
+          },
+        },
+        {
+          selector: 'edge[edgeKind = "active-link"]',
+          style: {
+            width: 4.25,
+            'line-color': '#aebdff',
+            'target-arrow-color': '#aebdff',
+            'line-style': 'solid',
+            opacity: 0.95,
+          },
+        },
+        {
+          selector: 'edge[edgeKind = "backup-link"]',
+          style: {
+            width: 2.25,
+            'line-color': '#52b7b0',
+            'target-arrow-color': '#52b7b0',
+            'line-style': 'dashed',
+            opacity: 0.52,
           },
         },
       ],
@@ -163,6 +239,7 @@ export default function TopologyGraph({ topology, onNodeClick }) {
     const visibleNodes = topology.nodes.filter((node) => {
       return !(node.role === 'CORE' && node.status === 'OFFLINE');
     });
+    const nodePositions = buildTopologyNodePositions(topology, visibleNodes);
 
     const elements = [];
 
@@ -172,10 +249,12 @@ export default function TopologyGraph({ topology, onNodeClick }) {
         group: 'nodes',
         data: {
           id: rawId,
-          label: rawId.slice(0, 8),
+          label: buildTopologyNodeLabel(topology, n),
           role: n.role ?? 'NODE',
           status: n.status ?? 'ONLINE',
+          nodeKind: classifyTopologyNode(topology, n),
         },
+        position: nodePositions[rawId] ?? { x: 0, y: 0 },
       });
     }
 
@@ -199,6 +278,7 @@ export default function TopologyGraph({ topology, onNodeClick }) {
           source: fromId,
           target: toId,
           rtt: rttValue,
+          edgeKind: classifyTopologyLink(topology, l),
         },
       });
     }
@@ -208,46 +288,13 @@ export default function TopologyGraph({ topology, onNodeClick }) {
       cy.add(elements);
     });
 
-    const nodeCount = visibleNodes.length;
-
-    // 작은 토폴로지는 concentric이 가장 안정적으로 "가운데" 잘 잡힘
-    // 큰 토폴로지는 cose로 자연스럽게 퍼뜨림
-    const layoutOptions =
-      nodeCount <= 20
-        ? {
-            name: 'concentric',
-            animate: false,
-            fit: true,
-            padding: 100,
-            avoidOverlap: true,
-            spacingFactor: 1.15,
-            minNodeSpacing: 60,
-            startAngle: -Math.PI / 2,
-            concentric: (node) => {
-              const role = node.data('role');
-              const status = node.data('status');
-
-              if (role === 'CORE') return 3;
-              if (status === 'OFFLINE') return 1;
-              return 2;
-            },
-            levelWidth: () => 1,
-          }
-        : {
-            name: 'cose',
-            animate: false,
-            fit: true,
-            padding: 100,
-            randomize: false,
-            nodeRepulsion: 120000,
-            idealEdgeLength: 160,
-            edgeElasticity: 120,
-            nestingFactor: 1.1,
-            gravity: 0.25,
-            numIter: 1200,
-          };
-
-    const layout = cy.layout(layoutOptions);
+    const layout = cy.layout({
+      name: 'preset',
+      animate: true,
+      animationDuration: 420,
+      fit: true,
+      padding: 120,
+    });
 
     layout.on('layoutstop', () => {
       requestAnimationFrame(() => {

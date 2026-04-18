@@ -1,9 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import mqtt from 'mqtt';
 import { parseConnectionTable, parseMqttMessage } from '../mqtt/parsers.js';
-import { buildPresentationTopology } from '../mqtt/topologyVisibility.js';
+import { buildPresentationTopology, reconcileHiddenNodeIds } from '../mqtt/topologyVisibility.js';
+import {
+  buildBrokerUrl,
+  parseBrokerEndpoint,
+  resolveInitialBrokerUrl,
+  resolveBackupReconnectTarget,
+  selectPromotedActiveNode,
+} from '../mqtt/failover.js';
 
-const DEFAULT_URL = import.meta.env.VITE_MQTT_URL ?? 'ws://localhost:9001';
 const MAX_EVENTS = 50;
 const MAX_ALERTS = 20;
 const ALERT_TTL_MS = 5000;
@@ -19,17 +25,21 @@ const ALERT_TTL_MS = 5000;
  * }}
  */
 export function useMqtt() {
-  const [brokerUrl, setBrokerUrl]       = useState(DEFAULT_URL);
+  const [brokerUrl, setBrokerUrl]       = useState(() => (
+    resolveInitialBrokerUrl(import.meta.env.VITE_MQTT_URL, globalThis.location)
+  ));
   const [status, setStatus]             = useState('connecting');
   const [topology, setTopology]         = useState(null);
   const [events, setEvents]             = useState([]);
   const [alerts, setAlerts]             = useState([]);
+  const [incidents, setIncidents]       = useState([]);
   const [reconnectInfo, setReconnectInfo] = useState(null); // { url, reason } | null
 
   const clientRef      = useRef(null);
   const seenMsgIds     = useRef(new Set());
   // node_down/node_up 알림 중복 제거용: "topic:ct.version" 형태 키
   const seenAlertKeys  = useRef(new Set());
+  const seenIncidentKeysRef = useRef(new Set());
   // raw topology와 발표용 topology를 분리해서 보관
   const rawTopologyRef     = useRef(null);
   const topologyRef        = useRef(null);
@@ -38,8 +48,24 @@ export function useMqtt() {
   const forceAcceptNextRef = useRef(false);
 
   useEffect(() => {
+    const pushIncident = (incident) => {
+      if (!incident?.key || seenIncidentKeysRef.current.has(incident.key)) return;
+      seenIncidentKeysRef.current.add(incident.key);
+      setIncidents(prev => [incident, ...prev].slice(0, 12));
+    };
+
+    const reconnectToBrokerHost = (nextHost, reason) => {
+      const nextUrl = buildBrokerUrl(brokerUrl, nextHost);
+      if (!nextUrl || nextUrl === brokerUrl) return false;
+
+      setReconnectInfo({ url: nextUrl, reason });
+      setBrokerUrl(nextUrl);
+      return true;
+    };
+
     const applyPresentationTopology = (rawTopology) => {
       rawTopologyRef.current = rawTopology;
+      hiddenNodeIdsRef.current = reconcileHiddenNodeIds(rawTopology, hiddenNodeIdsRef.current);
       const nextTopology = buildPresentationTopology(rawTopology, hiddenNodeIdsRef.current);
       topologyRef.current = nextTopology;
       setTopology(nextTopology);
@@ -47,6 +73,7 @@ export function useMqtt() {
 
     const refreshVisibleTopology = () => {
       if (!rawTopologyRef.current) return;
+      hiddenNodeIdsRef.current = reconcileHiddenNodeIds(rawTopologyRef.current, hiddenNodeIdsRef.current);
       const nextTopology = buildPresentationTopology(rawTopologyRef.current, hiddenNodeIdsRef.current);
       topologyRef.current = nextTopology;
       setTopology(nextTopology);
@@ -88,6 +115,11 @@ export function useMqtt() {
 
         forceAcceptNextRef.current = false;
         applyPresentationTopology(parsed);
+
+        const promotedNode = selectPromotedActiveNode(previousTopology, parsed, brokerUrl);
+        if (promotedNode?.ip) {
+          reconnectToBrokerHost(promotedNode.ip, 'M-04');
+        }
         return;
       }
 
@@ -108,10 +140,26 @@ export function useMqtt() {
           topic.startsWith('campus/alert/node_up/')) {
         const ct = parseConnectionTable(raw);
         const nodeId = topic.split('/').pop();
+        const nodeInCt = ct?.nodes?.find((node) => node.id === nodeId) ?? null;
+        const nodeIsOfflineInCt = nodeInCt ? nodeInCt.status === 'OFFLINE' : true;
         if (topic.startsWith('campus/alert/node_down/')) {
-          hiddenNodeIdsRef.current.add(nodeId);
+          if (nodeIsOfflineInCt) {
+            pushIncident({
+              key: `node_down:${nodeId}:${ct?.version ?? 'na'}`,
+              type: 'EDGE_DOWN',
+              role: 'NODE',
+              nodeId,
+              ts: Date.now(),
+            });
+          }
         } else {
-          hiddenNodeIdsRef.current.delete(nodeId);
+          pushIncident({
+            key: `node_up:${nodeId}:${ct?.version ?? 'na'}`,
+            type: 'EDGE_UP',
+            role: 'NODE',
+            nodeId,
+            ts: Date.now(),
+          });
         }
         // CT 버전 기반 중복 제거 (QoS 1 재전달 대응)
         const alertKey = `${topic}:${ct?.version ?? raw.slice(0, 32)}`;
@@ -145,11 +193,20 @@ export function useMqtt() {
         setTimeout(() => {
           setAlerts(prev => prev.filter(a => a.ts !== alert.ts));
         }, ALERT_TTL_MS);
+        pushIncident({
+          key: `core_switch:${parsed?.source?.id ?? parsed?.msg_id ?? alert.ts}`,
+          type: 'FAILOVER_SWITCH',
+          role: 'CORE',
+          nodeId: parsed?.source?.id ?? '',
+          endpoint: parsed?.payload?.description ?? '',
+          ts: alert.ts,
+        });
         forceAcceptNextRef.current = true;
-        // 현재 배포 구조에서는 core 프로세스만 교체되고,
-        // 브라우저가 붙는 WebSocket broker는 기존 주소에 계속 살아 있을 수 있다.
-        // 따라서 core_switch 수신만으로 broker URL을 바꾸지 않고
-        // 다음 topology 갱신을 강제로 수락해 화면만 즉시 갱신한다.
+
+        const nextEndpoint = parseBrokerEndpoint(parsed?.payload?.description ?? '');
+        if (nextEndpoint?.host) {
+          reconnectToBrokerHost(nextEndpoint.host, 'core_switch');
+        }
         return;
       }
 
@@ -157,8 +214,22 @@ export function useMqtt() {
       if (topic.startsWith('campus/will/core/')) {
         const parsed = parseMqttMessage(raw);
         const failedCoreId = topic.slice('campus/will/core/'.length);
+        const previousTopology = rawTopologyRef.current;
+        let incidentType = 'CORE_DOWN';
+        if (previousTopology?.active_core_id === failedCoreId) {
+          incidentType = 'ACTIVE_CORE_DOWN';
+        } else if (previousTopology?.backup_core_id === failedCoreId) {
+          incidentType = 'BACKUP_CORE_DOWN';
+        }
         hiddenNodeIdsRef.current.add(failedCoreId);
         refreshVisibleTopology();
+        pushIncident({
+          key: `core_down:${failedCoreId}`,
+          type: incidentType,
+          role: 'CORE',
+          nodeId: failedCoreId,
+          ts: Date.now(),
+        });
         // msg_id 기반 중복 제거 (QoS 1 재전달 대응)
         if (parsed) {
           if (seenMsgIds.current.has(parsed.msg_id)) return;
@@ -170,6 +241,13 @@ export function useMqtt() {
           setAlerts(prev => prev.filter(a => a.ts !== alert.ts));
         }, ALERT_TTL_MS);
         forceAcceptNextRef.current = true;
+
+        if (incidentType === 'ACTIVE_CORE_DOWN') {
+          const reconnectNode = resolveBackupReconnectTarget(previousTopology);
+          if (reconnectNode?.ip) {
+            reconnectToBrokerHost(reconnectNode.ip, 'W-01');
+          }
+        }
         return;
       }
     });
@@ -181,5 +259,5 @@ export function useMqtt() {
     return () => { client.end(true); };
   }, [brokerUrl]); // brokerUrl 변경 시 재연결
 
-  return { status, topology, events, alerts, reconnectInfo, brokerUrl, setBrokerUrl };
+  return { status, topology, events, alerts, incidents, reconnectInfo, brokerUrl, setBrokerUrl };
 }

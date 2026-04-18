@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildBrokerUrl,
+  formatBrokerHost,
+  parseBrokerEndpoint,
+  resolveInitialBrokerUrl,
   resolveBackupReconnectTarget,
   selectPromotedActiveNode,
   sameBrokerHost,
@@ -51,6 +54,59 @@ test('buildBrokerUrl keeps websocket port while swapping host', () => {
   assert.equal(
     buildBrokerUrl('ws://192.168.0.7:9001', '192.168.0.16'),
     'ws://192.168.0.16:9001',
+  );
+});
+
+test('formatBrokerHost wraps ipv6 hosts in brackets', () => {
+  assert.equal(formatBrokerHost('::1'), '[::1]');
+  assert.equal(formatBrokerHost('192.168.0.7'), '192.168.0.7');
+});
+
+test('resolveInitialBrokerUrl prefers explicit env configuration', () => {
+  assert.equal(
+    resolveInitialBrokerUrl('ws://192.168.0.7:9001', {
+      protocol: 'http:',
+      hostname: '192.168.0.8',
+    }),
+    'ws://192.168.0.7:9001',
+  );
+});
+
+test('resolveInitialBrokerUrl derives websocket host from browser location', () => {
+  assert.equal(
+    resolveInitialBrokerUrl('', {
+      protocol: 'http:',
+      hostname: '192.168.0.7',
+    }),
+    'ws://192.168.0.7:9001',
+  );
+});
+
+test('resolveInitialBrokerUrl uses wss for https pages', () => {
+  assert.equal(
+    resolveInitialBrokerUrl('', {
+      protocol: 'https:',
+      hostname: 'demo.example.com',
+    }),
+    'wss://demo.example.com:9001',
+  );
+});
+
+test('resolveInitialBrokerUrl falls back to localhost when location is unavailable', () => {
+  assert.equal(resolveInitialBrokerUrl('', null), 'ws://localhost:9001');
+});
+
+test('parseBrokerEndpoint extracts host from mqtt endpoint payload', () => {
+  assert.deepEqual(
+    parseBrokerEndpoint('192.168.0.8:1883'),
+    { host: '192.168.0.8', port: '1883' },
+  );
+});
+
+test('parseBrokerEndpoint supports bare hosts', () => {
+  assert.deepEqual(
+    parseBrokerEndpoint('backup-core.local'),
+    { host: 'backup-core.local', port: '' },
   );
 });
 

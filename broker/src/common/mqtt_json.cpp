@@ -7,6 +7,13 @@ using json = nlohmann::json;
 
 // Helpers
 
+template <size_t N>
+static void copy_cstr(char (&dst)[N], const std::string& src) {
+    std::memset(dst, 0, N);
+    std::strncpy(dst, src.c_str(), N - 1);
+    dst[N - 1] = '\0';
+}
+
 static const char* node_role_str(NodeRole r) {
     return r == NODE_ROLE_CORE ? "CORE" : "NODE";
 }
@@ -112,19 +119,21 @@ bool connection_table_from_json(const std::string& str, ConnectionTable& out) {
     try {
         json j = json::parse(str);
 
+        std::memset(&out, 0, sizeof(out));
+
         out.version = j.at("version").get<int>();
-        strncpy(out.last_update, j.at("last_update").get<std::string>().c_str(), TIMESTAMP_LEN - 1);
-        strncpy(out.active_core_id, j.at("active_core_id").get<std::string>().c_str(), UUID_LEN - 1);
-        strncpy(out.backup_core_id, j.at("backup_core_id").get<std::string>().c_str(), UUID_LEN - 1);
+        copy_cstr(out.last_update, j.at("last_update").get<std::string>());
+        copy_cstr(out.active_core_id, j.at("active_core_id").get<std::string>());
+        copy_cstr(out.backup_core_id, j.at("backup_core_id").get<std::string>());
 
         const auto& nodes = j.at("nodes");
         out.node_count = 0;
         for (const auto& n : nodes) {
             if (out.node_count >= MAX_NODES) break;
             NodeEntry& e = out.nodes[out.node_count++];
-            strncpy(e.id, n.at("id").get<std::string>().c_str(), UUID_LEN - 1);
+            copy_cstr(e.id, n.at("id").get<std::string>());
             e.role = node_role_from_str(n.at("role").get<std::string>());
-            strncpy(e.ip, n.at("ip").get<std::string>().c_str(), IP_LEN - 1);
+            copy_cstr(e.ip, n.at("ip").get<std::string>());
             e.port = n.at("port").get<uint16_t>();
             e.status = node_status_from_str(n.at("status").get<std::string>());
             e.hop_to_core = n.at("hop_to_core").get<int>();
@@ -135,8 +144,8 @@ bool connection_table_from_json(const std::string& str, ConnectionTable& out) {
         for (const auto& l : links) {
             if (out.link_count >= MAX_LINKS) break;
             LinkEntry& e = out.links[out.link_count++];
-            strncpy(e.from_id, l.at("from_id").get<std::string>().c_str(), UUID_LEN - 1);
-            strncpy(e.to_id, l.at("to_id").get<std::string>().c_str(), UUID_LEN - 1);
+            copy_cstr(e.from_id, l.at("from_id").get<std::string>());
+            copy_cstr(e.to_id, l.at("to_id").get<std::string>());
             e.rtt_ms = l.at("rtt_ms").get<float>();
         }
 
@@ -188,9 +197,11 @@ bool mqtt_message_from_json(const std::string& str, MqttMessage& out) {
     try {
         json j = json::parse(str);
 
-        strncpy(out.msg_id, j.at("msg_id").get<std::string>().c_str(), UUID_LEN - 1);
+        std::memset(&out, 0, sizeof(out));
+
+        copy_cstr(out.msg_id, j.at("msg_id").get<std::string>());
         out.type = msg_type_from_str(j.at("type").get<std::string>());
-        strncpy(out.timestamp, j.at("timestamp").get<std::string>().c_str(), TIMESTAMP_LEN - 1);
+        copy_cstr(out.timestamp, j.at("timestamp").get<std::string>());
 
         out.priority = j.contains("priority")
             ? priority_from_str(j["priority"].get<std::string>())
@@ -198,16 +209,16 @@ bool mqtt_message_from_json(const std::string& str, MqttMessage& out) {
 
         const auto& src = j.at("source");
         out.source.role = node_role_from_str(src.at("role").get<std::string>());
-        strncpy(out.source.id, src.at("id").get<std::string>().c_str(), UUID_LEN - 1);
+        copy_cstr(out.source.id, src.at("id").get<std::string>());
 
         const auto& tgt = j.at("target");
         out.target.role = node_role_from_str(tgt.at("role").get<std::string>());
-        strncpy(out.target.id, tgt.at("id").get<std::string>().c_str(), UUID_LEN - 1);
+        copy_cstr(out.target.id, tgt.at("id").get<std::string>());
 
         const auto& r = j.at("route");
-        strncpy(out.route.original_node, r.at("original_node").get<std::string>().c_str(), UUID_LEN - 1);
-        strncpy(out.route.prev_hop, r.at("prev_hop").get<std::string>().c_str(), UUID_LEN - 1);
-        strncpy(out.route.next_hop, r.at("next_hop").get<std::string>().c_str(), UUID_LEN - 1);
+        copy_cstr(out.route.original_node, r.at("original_node").get<std::string>());
+        copy_cstr(out.route.prev_hop, r.at("prev_hop").get<std::string>());
+        copy_cstr(out.route.next_hop, r.at("next_hop").get<std::string>());
         out.route.hop_count = r.at("hop_count").get<int>();
         out.route.ttl = r.at("ttl").get<int>();
 
@@ -217,9 +228,9 @@ bool mqtt_message_from_json(const std::string& str, MqttMessage& out) {
         out.delivery.retain = d.at("retain").get<bool>();
 
         const auto& p = j.at("payload");
-        strncpy(out.payload.building_id, p.at("building_id").get<std::string>().c_str(), BUILDING_ID_LEN - 1);
-        strncpy(out.payload.camera_id, p.at("camera_id").get<std::string>().c_str(), CAMERA_ID_LEN - 1);
-        strncpy(out.payload.description, p.at("description").get<std::string>().c_str(), DESCRIPTION_LEN - 1);
+        copy_cstr(out.payload.building_id, p.at("building_id").get<std::string>());
+        copy_cstr(out.payload.camera_id, p.at("camera_id").get<std::string>());
+        copy_cstr(out.payload.description, p.at("description").get<std::string>());
 
         return true;
     }
