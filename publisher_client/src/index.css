@@ -1,0 +1,57 @@
+:root {
+  --bg:        #0f1117;
+  --surface:   #1a1a2e;
+  --border:    #2a2a3a;
+  --text:      #e0e0e0;
+  --text-dim:  #888;
+  --primary:   #6366f1;
+  --primary-h: #4f51d4;
+  --success:   #4caf50;
+  --danger:    #f44336;
+  --warning:   #ff9800;
+  --orange:    #ff9800;
+  --font:      'Menlo', 'Consolas', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  transition: background 0.15s;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+input[type="text"],
+input[type="url"],
+input:not([type="checkbox"]):not([type="range"]) {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+  width: 100%;
+  outline: none;
+}
+
+input:focus {
+  border-color: var(--primary);
+}
