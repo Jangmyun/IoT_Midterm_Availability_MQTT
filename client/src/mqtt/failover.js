@@ -14,6 +14,32 @@ export function parseBrokerUrl(rawUrl) {
   }
 }
 
+export function parseBrokerEndpoint(rawEndpoint) {
+  if (typeof rawEndpoint !== 'string') return null;
+
+  const trimmed = rawEndpoint.trim();
+  if (!trimmed) return null;
+
+  if (trimmed.startsWith('[')) {
+    const closingIndex = trimmed.indexOf(']');
+    if (closingIndex === -1) return null;
+    return {
+      host: trimmed.slice(1, closingIndex),
+      port: trimmed.slice(closingIndex + 2) || '',
+    };
+  }
+
+  const lastColonIndex = trimmed.lastIndexOf(':');
+  if (lastColonIndex === -1) {
+    return { host: trimmed, port: '' };
+  }
+
+  return {
+    host: trimmed.slice(0, lastColonIndex),
+    port: trimmed.slice(lastColonIndex + 1),
+  };
+}
+
 export function sameBrokerHost(left, right) {
   if (typeof left !== 'string' || typeof right !== 'string') return false;
 

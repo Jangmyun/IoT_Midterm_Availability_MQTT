@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildBrokerUrl,
+  parseBrokerEndpoint,
   resolveBackupReconnectTarget,
   selectPromotedActiveNode,
   sameBrokerHost,
@@ -51,6 +52,20 @@ test('buildBrokerUrl keeps websocket port while swapping host', () => {
   assert.equal(
     buildBrokerUrl('ws://192.168.0.7:9001', '192.168.0.16'),
     'ws://192.168.0.16:9001',
+  );
+});
+
+test('parseBrokerEndpoint extracts host from mqtt endpoint payload', () => {
+  assert.deepEqual(
+    parseBrokerEndpoint('192.168.0.8:1883'),
+    { host: '192.168.0.8', port: '1883' },
+  );
+});
+
+test('parseBrokerEndpoint supports bare hosts', () => {
+  assert.deepEqual(
+    parseBrokerEndpoint('backup-core.local'),
+    { host: 'backup-core.local', port: '' },
   );
 });
 
