@@ -91,8 +91,7 @@ export function useMqtt() {
       setReconnectInfo(null);
       client.subscribe([
         'campus/monitor/topology',   // M-04: Connection Table 브로드캐스트
-        'campus/data/+',             // D-01: 이벤트 로그
-        'campus/data/+/+',           // D-02: 건물별 세분화 이벤트
+        'campus/data/#',             // D-01: 이벤트 로그
         'campus/alert/node_down/+',  // A-01: Node OFFLINE 알림
         'campus/alert/node_up/+',    // A-02: Node 복구 알림
         'campus/alert/core_switch',  // A-03: Active Core 변경 → 재연결
