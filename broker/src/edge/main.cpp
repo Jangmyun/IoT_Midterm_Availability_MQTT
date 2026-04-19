@@ -405,6 +405,134 @@ static void send_pings_to_nodes(EdgeContext* ctx)
     }
 }
 
+static void handle_topology_message(struct mosquitto* mosq, EdgeContext* ctx,
+    const struct mosquitto_message* msg)
+{
+    ConnectionTable ct;
+    std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+    if (!connection_table_from_json(json, ct))
+        return;
+
+    if (ct.version <= ctx->last_ct_version)
+    {
+        std::printf("[edge] skip stale CT (remote=%d <= local=%d)\n",
+            ct.version, ctx->last_ct_version);
+        return;
+    }
+
+    // active_core_id 변경 감지 → 새 Active Core로 재연결
+    if (ct.active_core_id[0] != '\0')
+    {
+        std::string prev_active = ctx->ct_manager->snapshot().active_core_id;
+        ctx->ct_manager->setActiveCoreId(ct.active_core_id);
+
+        if (prev_active != ct.active_core_id)
+        {
+            // 새 active core의 IP:Port는 로컬 CT에 없을 수 있으므로 수신된 CT에서 직접 탐색
+            const NodeEntry* new_core_entry = nullptr;
+            for (int j = 0; j < ct.node_count; j++)
+            {
+                if (std::strncmp(ct.nodes[j].id, ct.active_core_id, UUID_LEN) == 0)
+                {
+                    new_core_entry = &ct.nodes[j];
+                    break;
+                }
+            }
+            if (new_core_entry && new_core_entry->ip[0] != '\0'
+                && (std::strcmp(new_core_entry->ip, ctx->active_core_ip) != 0
+                    || new_core_entry->port != ctx->active_core_port))
+            {
+                std::printf("[edge] active_core_id changed → reconnect to %s:%d\n",
+                    new_core_entry->ip, new_core_entry->port);
+                std::strncpy(ctx->active_core_ip, new_core_entry->ip, IP_LEN - 1);
+                ctx->active_core_port = new_core_entry->port;
+                mosquitto_disconnect(ctx->mosq_core);
+                mosquitto_connect_async(ctx->mosq_core,
+                    ctx->active_core_ip, ctx->active_core_port, 60);
+                ctx->prefer_backup = false;
+            }
+        }
+    }
+
+    ctx->ct_manager->replace(ct);
+    ctx->last_ct_version = ct.version;
+    std::printf("[edge] CT applied (version=%d, nodes=%d)\n", ct.version, ct.node_count);
+
+    // publisher_client가 Edge WebSocket에서 CT를 받을 수 있도록 로컬 재발행
+    if (ctx->mosq_local) {
+        std::string ct_raw(static_cast<char*>(msg->payload), msg->payloadlen);
+        mosquitto_publish(ctx->mosq_local, nullptr, TOPIC_TOPOLOGY,
+            (int)ct_raw.size(), ct_raw.c_str(), 1, true);
+    }
+
+    send_pings_to_nodes(ctx);  // RTT 측정 시작 (FR-08)
+    (void)mosq;
+}
+
+static void handle_core_switch_message(EdgeContext* ctx,
+    const struct mosquitto_message* msg)
+{
+    MqttMessage sw = {};
+    std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+    if (!mqtt_message_from_json(json, sw))
+        return;
+
+    char new_ip[IP_LEN] = {};
+    int  new_port = 0;
+    if (!parse_ip_port(sw.payload.description, new_ip, sizeof(new_ip), &new_port))
+    {
+        std::fprintf(stderr, "[edge] core_switch: invalid payload '%s'\n",
+            sw.payload.description);
+        return;
+    }
+
+    std::printf("[edge] core_switch: new active core at %s:%d\n", new_ip, new_port);
+
+    // 이미 해당 Core에 연결 중이면 무시
+    if (std::strcmp(new_ip, ctx->active_core_ip) == 0
+        && new_port == ctx->active_core_port)
+        return;
+
+    std::printf("[edge] core_switch: reconnecting to %s:%d\n", new_ip, new_port);
+    std::strncpy(ctx->active_core_ip, new_ip, IP_LEN - 1);
+    ctx->active_core_port = new_port;
+    mosquitto_disconnect(ctx->mosq_core);
+    mosquitto_connect_async(ctx->mosq_core, ctx->active_core_ip, ctx->active_core_port, 60);
+    ctx->prefer_backup = false;
+}
+
+static void handle_core_will_message(EdgeContext* ctx,
+    const struct mosquitto_message* msg)
+{
+    const char* failed_core_id = msg->topic + 17;
+    if (!should_failover_on_core_will(*ctx->ct_manager, failed_core_id))
+    {
+        if (is_backup_core_will(*ctx->ct_manager, failed_core_id))
+        {
+            std::printf("[edge] backup core down: %s\n", failed_core_id);
+        }
+        else
+        {
+            std::printf("[edge] ignoring non-active core down notice: %s\n", failed_core_id);
+        }
+        return;
+    }
+
+    std::printf("[edge] core down: %s\n", failed_core_id);
+
+    // active core 경로는 더 이상 우선 사용하지 않음
+    ctx->core_connected = false;
+    ctx->prefer_backup = true;
+
+    std::printf("[edge] switched to backup-preferred mode\n");
+
+    // backup이 이미 연결되어 있다면 저장된 메시지부터 바로 재전송 시도
+    if (ctx->backup_connected && ctx->mosq_backup)
+    {
+        flush_store_queue(ctx);
+    }
+}
+
 // Callbacks =====================================================
 
 static void on_connect_core(struct mosquitto* mosq, void* userdata, int rc)
@@ -460,131 +588,21 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
     // CT 수신 (M-04): 로컬 CT 갱신 + active_core_id 변경 감지
     if (std::strcmp(msg->topic, TOPIC_TOPOLOGY) == 0)
     {
-        ConnectionTable ct;
-        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
-        if (connection_table_from_json(json, ct))
-        {
-            if (ct.version <= ctx->last_ct_version)
-            {
-                std::printf("[edge] skip stale CT (remote=%d <= local=%d)\n",
-                    ct.version, ctx->last_ct_version);
-                return;
-            }
-
-            // active_core_id 변경 감지 → 새 Active Core로 재연결
-            if (ct.active_core_id[0] != '\0')
-            {
-                std::string prev_active = ctx->ct_manager->snapshot().active_core_id;
-                ctx->ct_manager->setActiveCoreId(ct.active_core_id);
-
-                if (prev_active != ct.active_core_id)
-                {
-                    // 새 active core의 IP:Port는 로컬 CT에 없을 수 있으므로 수신된 CT에서 직접 탐색
-                    const NodeEntry* new_core_entry = nullptr;
-                    for (int j = 0; j < ct.node_count; j++)
-                    {
-                        if (std::strncmp(ct.nodes[j].id, ct.active_core_id, UUID_LEN) == 0)
-                        {
-                            new_core_entry = &ct.nodes[j];
-                            break;
-                        }
-                    }
-                    if (new_core_entry && new_core_entry->ip[0] != '\0'
-                        && (std::strcmp(new_core_entry->ip, ctx->active_core_ip) != 0
-                            || new_core_entry->port != ctx->active_core_port))
-                    {
-                        std::printf("[edge] active_core_id changed → reconnect to %s:%d\n",
-                            new_core_entry->ip, new_core_entry->port);
-                        std::strncpy(ctx->active_core_ip, new_core_entry->ip, IP_LEN - 1);
-                        ctx->active_core_port = new_core_entry->port;
-                        mosquitto_disconnect(ctx->mosq_core);
-                        mosquitto_connect_async(ctx->mosq_core,
-                            ctx->active_core_ip, ctx->active_core_port, 60);
-                        ctx->prefer_backup = false;
-                    }
-                }
-            }
-
-            ctx->ct_manager->replace(ct);
-            ctx->last_ct_version = ct.version;
-            std::printf("[edge] CT applied (version=%d, nodes=%d)\n", ct.version, ct.node_count);
-
-            // publisher_client가 Edge WebSocket에서 CT를 받을 수 있도록 로컬 재발행
-            if (ctx->mosq_local) {
-                std::string ct_raw(static_cast<char*>(msg->payload), msg->payloadlen);
-                mosquitto_publish(ctx->mosq_local, nullptr, TOPIC_TOPOLOGY,
-                    (int)ct_raw.size(), ct_raw.c_str(), 1, true);
-            }
-
-            send_pings_to_nodes(ctx);  // RTT 측정 시작 (FR-08)
-        }
+        handle_topology_message(mosq, ctx, msg);
         return;
     }
 
     // campus/alert/core_switch 수신: 새 Active Core로 명시적 재연결 (FR-05, FR-10)
     if (std::strcmp(msg->topic, "campus/alert/core_switch") == 0)
     {
-        MqttMessage sw = {};
-        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
-        if (!mqtt_message_from_json(json, sw))
-            return;
-
-        char new_ip[IP_LEN] = {};
-        int  new_port = 0;
-        if (!parse_ip_port(sw.payload.description, new_ip, sizeof(new_ip), &new_port))
-        {
-            std::fprintf(stderr, "[edge] core_switch: invalid payload '%s'\n",
-                sw.payload.description);
-            return;
-        }
-
-        std::printf("[edge] core_switch: new active core at %s:%d\n", new_ip, new_port);
-
-        // 이미 해당 Core에 연결 중이면 무시
-        if (std::strcmp(new_ip, ctx->active_core_ip) == 0
-            && new_port == ctx->active_core_port)
-            return;
-
-        std::printf("[edge] core_switch: reconnecting to %s:%d\n", new_ip, new_port);
-        std::strncpy(ctx->active_core_ip, new_ip, IP_LEN - 1);
-        ctx->active_core_port = new_port;
-        mosquitto_disconnect(ctx->mosq_core);
-        mosquitto_connect_async(ctx->mosq_core, ctx->active_core_ip, ctx->active_core_port, 60);
-        ctx->prefer_backup = false;
+        handle_core_switch_message(ctx, msg);
         return;
     }
 
     // Core LWT 수신 (W-01): backup core를 사실상 1순위로 승격
     if (std::strncmp(msg->topic, "campus/will/core/", 17) == 0)
     {
-        const char* failed_core_id = msg->topic + 17;
-        if (!should_failover_on_core_will(*ctx->ct_manager, failed_core_id))
-        {
-            if (is_backup_core_will(*ctx->ct_manager, failed_core_id))
-            {
-                std::printf("[edge] backup core down: %s\n", failed_core_id);
-            }
-            else
-            {
-                std::printf("[edge] ignoring non-active core down notice: %s\n", failed_core_id);
-            }
-            return;
-        }
-
-        std::printf("[edge] core down: %s\n", failed_core_id);
-
-        // active core 경로는 더 이상 우선 사용하지 않음
-        ctx->core_connected = false;
-        ctx->prefer_backup = true;
-
-        std::printf("[edge] switched to backup-preferred mode\n");
-
-        // backup이 이미 연결되어 있다면 저장된 메시지부터 바로 재전송 시도
-        if (ctx->backup_connected && ctx->mosq_backup)
-        {
-            flush_store_queue(ctx);
-        }
-
+        handle_core_will_message(ctx, msg);
         return;
     }
 
@@ -756,6 +774,12 @@ static void on_connect_backup(struct mosquitto* mosq, void* userdata, int rc)
     ctx->backup_connected = true;
     std::printf("[edge] connected to backup core\n");
 
+    // backup broker가 새 active가 된 이후 edge가 재기동해도
+    // 현재 active CT를 backup 경로에서 다시 학습할 수 있어야 한다.
+    mosquitto_subscribe(mosq, nullptr, TOPIC_TOPOLOGY, 1);
+    mosquitto_subscribe(mosq, nullptr, TOPIC_CORE_WILL_ALL, 1);
+    mosquitto_subscribe(mosq, nullptr, "campus/alert/core_switch", 1);
+
     // standby backup도 edge의 최신 ONLINE 상태는 알아야 한다.
     // 다만 backup 연결은 control/LWT source가 아니라 status warm-standby 경로로만 사용한다.
     publish_edge_status(ctx->mosq_backup, ctx, "backup core");
@@ -776,11 +800,25 @@ static void on_disconnect_backup(struct mosquitto* /*mosq*/, void* userdata, int
 static void on_message_backup(struct mosquitto* mosq, void* userdata,
     const struct mosquitto_message* msg)
 {
-    // standby backup 연결은 publish 경로만 유지한다.
-    // topology/core_switch/LWT 제어는 active 경로(mosq_core)에서만 수신한다.
-    (void)mosq;
-    (void)userdata;
-    (void)msg;
+    auto* ctx = static_cast<EdgeContext*>(userdata);
+
+    if (std::strcmp(msg->topic, TOPIC_TOPOLOGY) == 0)
+    {
+        handle_topology_message(mosq, ctx, msg);
+        return;
+    }
+
+    if (std::strcmp(msg->topic, "campus/alert/core_switch") == 0)
+    {
+        handle_core_switch_message(ctx, msg);
+        return;
+    }
+
+    if (std::strncmp(msg->topic, "campus/will/core/", 17) == 0)
+    {
+        handle_core_will_message(ctx, msg);
+        return;
+    }
 }
 
 // main =====================================================

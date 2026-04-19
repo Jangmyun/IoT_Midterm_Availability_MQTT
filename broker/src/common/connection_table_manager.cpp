@@ -13,6 +13,14 @@ static void set_now(char* buf) {
     std::strftime(buf, TIMESTAMP_LEN, "%Y-%m-%dT%H:%M:%SZ", utc);
 }
 
+static void copy_timestamp(char* dst, const char* src) {
+    if (!dst) return;
+    std::memset(dst, 0, TIMESTAMP_LEN);
+    if (!src || src[0] == '\0') return;
+    std::strncpy(dst, src, TIMESTAMP_LEN - 1);
+    dst[TIMESTAMP_LEN - 1] = '\0';
+}
+
 // Public
 
 // Initialize ConnectionTable - memory allocation, set current time
@@ -35,7 +43,12 @@ bool ConnectionTableManager::addNode(const NodeEntry& node) {
     for (int i = 0; i < table_.node_count; i++) {
         if (std::strncmp(table_.nodes[i].id, node.id, UUID_LEN) == 0) return false;
     }
-    table_.nodes[table_.node_count++] = node;
+    NodeEntry stored = node;
+    if (stored.status_changed_at[0] == '\0') {
+        stored.previous_status = stored.status;
+        set_now(stored.status_changed_at);
+    }
+    table_.nodes[table_.node_count++] = stored;
     bumpVersion();
     return true;
 }
@@ -45,7 +58,17 @@ bool ConnectionTableManager::updateNode(const NodeEntry& node) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (int i = 0; i < table_.node_count; i++) { // 반복문 내에서 문자열 비교
         if (std::strncmp(table_.nodes[i].id, node.id, UUID_LEN) == 0) {
-            table_.nodes[i] = node;
+            NodeEntry next = node;
+            if (next.status_changed_at[0] == '\0') {
+                if (table_.nodes[i].status != next.status) {
+                    next.previous_status = table_.nodes[i].status;
+                    set_now(next.status_changed_at);
+                } else {
+                    next.previous_status = table_.nodes[i].previous_status;
+                    copy_timestamp(next.status_changed_at, table_.nodes[i].status_changed_at);
+                }
+            }
+            table_.nodes[i] = next;
             bumpVersion();
             return true;
         }
@@ -61,7 +84,9 @@ bool ConnectionTableManager::setNodeStatus(const char* id, NodeStatus status) {
             if (table_.nodes[i].status == status) {
                 return false;
             }
+            table_.nodes[i].previous_status = table_.nodes[i].status;
             table_.nodes[i].status = status;
+            set_now(table_.nodes[i].status_changed_at);
             bumpVersion();
             return true;
         }

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test src/mqtt/parsers.test.js src/mqtt/failover.test.js src/mqtt/topologyVisibility.test.js src/mqtt/nodePresentation.test.js src/mqtt/eventPresentation.test.js src/mqtt/eventSnapshot.test.js src/components/topologyGraphModel.test.js",
+    "test": "node --test src/mqtt/parsers.test.js src/mqtt/failover.test.js src/mqtt/topologyVisibility.test.js src/mqtt/nodePresentation.test.js src/mqtt/nodeTransitions.test.js src/mqtt/eventPresentation.test.js src/mqtt/eventSnapshot.test.js src/components/topologyGraphModel.test.js",
     "build": "npm run test && vite build",
     "lint": "eslint .",
     "preview": "vite preview"

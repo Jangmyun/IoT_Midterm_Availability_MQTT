@@ -96,6 +96,10 @@ std::string connection_table_to_json(const ConnectionTable& ct) {
             {"ip",          n.ip},
             {"port",        n.port},
             {"status",      node_status_str(n.status)},
+            {"previous_status", node_status_str(
+                n.status_changed_at[0] != '\0' ? n.previous_status : n.status)},
+            {"status_changed_at",
+                n.status_changed_at[0] != '\0' ? n.status_changed_at : ct.last_update},
             {"hop_to_core", n.hop_to_core}
             });
     }
@@ -136,6 +140,12 @@ bool connection_table_from_json(const std::string& str, ConnectionTable& out) {
             copy_cstr(e.ip, n.at("ip").get<std::string>());
             e.port = n.at("port").get<uint16_t>();
             e.status = node_status_from_str(n.at("status").get<std::string>());
+            e.previous_status = n.contains("previous_status")
+                ? node_status_from_str(n.at("previous_status").get<std::string>())
+                : e.status;
+            copy_cstr(e.status_changed_at, n.contains("status_changed_at")
+                ? n.at("status_changed_at").get<std::string>()
+                : out.last_update);
             e.hop_to_core = n.at("hop_to_core").get<int>();
         }
 
