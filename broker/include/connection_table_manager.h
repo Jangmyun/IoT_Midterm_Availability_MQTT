@@ -23,6 +23,7 @@ public:
     // Core failover 시 active/backup 교체
     void setActiveCoreId(const char* id);
     void setBackupCoreId(const char* id);
+    void replace(const ConnectionTable& table);
 
     // 직렬화용 스냅샷 (thread-safe 복사본 반환)
     ConnectionTable snapshot() const;

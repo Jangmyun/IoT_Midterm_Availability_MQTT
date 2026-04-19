@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import cytoscape from 'cytoscape';
 import {
+  buildTopologyGraphLinks,
   buildTopologyNodeLabel,
   buildTopologyNodePositions,
   classifyTopologyLink,
@@ -22,7 +23,7 @@ import {
  *
  * @param {{ topology: { nodes: any[], links: any[] } | null, onNodeClick?: (id: string | null) => void }} props
  */
-export default function TopologyGraph({ topology, onNodeClick }) {
+export default function TopologyGraph({ topology, onNodeClick, nodeDisplayMap }) {
   const containerRef = useRef(null);
   const cyRef = useRef(null);
   const onNodeClickRef = useRef(onNodeClick);
@@ -153,19 +154,23 @@ export default function TopologyGraph({ topology, onNodeClick }) {
         {
           selector: 'edge',
           style: {
-            width: 3,
+            width: 3.2,
             'line-color': '#516176',
             'target-arrow-color': '#516176',
             'curve-style': 'bezier',
+            'line-cap': 'round',
             label: 'data(rtt)',
             color: '#cbd5e1',
-            'font-size': 10,
-            'font-weight': 500,
-            'text-background-color': '#0b1020',
-            'text-background-opacity': 0.95,
-            'text-background-padding': 3,
+            'font-size': 11,
+            'font-weight': 700,
+            'text-background-color': '#08101d',
+            'text-background-opacity': 0.92,
+            'text-background-padding': 4,
+            'text-background-shape': 'roundrectangle',
             'text-border-opacity': 0,
+            'text-margin-y': -10,
             'overlay-opacity': 0,
+            opacity: 0.68,
           },
         },
         {
@@ -176,6 +181,9 @@ export default function TopologyGraph({ topology, onNodeClick }) {
             'target-arrow-color': '#aebdff',
             'line-style': 'solid',
             opacity: 0.95,
+            'shadow-blur': 10,
+            'shadow-opacity': 0.22,
+            'shadow-color': '#8ea2ff',
           },
         },
         {
@@ -186,6 +194,29 @@ export default function TopologyGraph({ topology, onNodeClick }) {
             'target-arrow-color': '#52b7b0',
             'line-style': 'dashed',
             opacity: 0.52,
+          },
+        },
+        {
+          selector: 'edge[edgeKind = "peer-link"]',
+          style: {
+            width: 2.8,
+            'line-color': '#67d3ff',
+            'target-arrow-color': '#67d3ff',
+            'line-style': 'dotted',
+            opacity: 0.82,
+            'shadow-blur': 14,
+            'shadow-opacity': 0.18,
+            'shadow-color': '#38bdf8',
+          },
+        },
+        {
+          selector: 'edge[edgeKind = "core-peer-link"]',
+          style: {
+            width: 2.2,
+            'line-color': '#94a3b8',
+            'target-arrow-color': '#94a3b8',
+            'line-style': 'dashed',
+            opacity: 0.5,
           },
         },
       ],
@@ -249,7 +280,7 @@ export default function TopologyGraph({ topology, onNodeClick }) {
         group: 'nodes',
         data: {
           id: rawId,
-          label: buildTopologyNodeLabel(topology, n),
+          label: nodeDisplayMap?.get(rawId)?.graphLabel ?? buildTopologyNodeLabel(topology, n),
           role: n.role ?? 'NODE',
           status: n.status ?? 'ONLINE',
           nodeKind: classifyTopologyNode(topology, n),
@@ -260,25 +291,18 @@ export default function TopologyGraph({ topology, onNodeClick }) {
 
     const nodeIdSet = new Set(visibleNodes.map((n) => String(n.id ?? '')));
 
-    for (const l of topology.links) {
+    for (const l of buildTopologyGraphLinks(topology, visibleNodes)) {
       const fromId = String(l.from_id ?? '');
       const toId = String(l.to_id ?? '');
-
       if (!nodeIdSet.has(fromId) || !nodeIdSet.has(toId)) continue;
-
-      const rttValue =
-        typeof l.rtt_ms === 'number' && Number.isFinite(l.rtt_ms) && l.rtt_ms > 0
-          ? `${Math.round(l.rtt_ms)}ms`
-          : '';
-
       elements.push({
         group: 'edges',
         data: {
           id: `${fromId}->${toId}`,
           source: fromId,
           target: toId,
-          rtt: rttValue,
-          edgeKind: classifyTopologyLink(topology, l),
+          rtt: l.rttLabel,
+          edgeKind: l.edgeKind ?? classifyTopologyLink(topology, l),
         },
       });
     }

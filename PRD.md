@@ -212,7 +212,9 @@ Node Broker    Main Core    Backup Core      Client
 1. Core가 Node의 LWT 수신 → Client에 Node 중단 알림
 2. Connection Table에서 해당 Node 상태를 `OFFLINE`으로 업데이트
 3. 갱신된 Connection Table 브로드캐스트
-4. Publisher: Connection Table 참조 → 인접 정상 Node로 이벤트 릴레이
+4. Publisher: Connection Table 참조 → **다른 ONLINE Edge 후보 중 RTT 최소, RTT 동점 시 `hop_to_core` 최소** 기준으로 이벤트 릴레이
+5. 대체 Edge가 없으면 **Active Core 직접 연결**로 전환
+6. 최신 CT 스냅샷이 `nodes=[]` 로 비어 있더라도, Publisher는 **마지막으로 수신한 Active Core endpoint를 캐시**해 두었다가 직접 연결 시도
 
 #### 5.5.2 Store-and-Forward 처리
 
@@ -401,7 +403,7 @@ typedef struct {
 | **FR-04** | Core 비정상 종료 시 LWT에 대체 Core IP/Port 포함 발행                             | P0       | Core 중단           |
 | **FR-05** | Backup Core가 LWT 수신 후 Active Core로 자동 전환                                 | P0       | Core 중단           |
 | **FR-06** | Node 비정상 종료 시 LWT 발행 및 Client 알림 (`A-01` 토픽)                         | P0       | Node 중단           |
-| **FR-07** | 전송 실패 이벤트를 로컬 FIFO 큐에 저장 후 재전송 (Store-and-Forward)              | P0       | Node 중단           |
+| **FR-07** | 전송 실패 이벤트를 로컬 FIFO 큐에 저장 후 재전송 (Store-and-Forward); C++ Edge 및 JS publisher_client 모두 적용 | P0 | Node 중단 |
 | **FR-08** | RTT 및 `hop_to_core` 기반 최적 Relay Node 선택                                    | P1       | Relay 선택          |
 | **FR-09** | 갱신된 Connection Table을 Retained Message로 신규 Broker에 전달                   | P1       | 신규 Broker 연결    |
 | **FR-10** | Core 간 부하 정보 주기적 공유 및 RTT 기반 Active Core 선출                        | P1       | 트래픽 분산         |
@@ -409,6 +411,11 @@ typedef struct {
 | **FR-12** | Graph Visualization 라이브러리로 Connection Table 변경 상태 실시간 표시           | P1       | 모니터링 클라이언트 |
 | **FR-13** | Node 복구 완료 시 `A-02` 토픽으로 Client에 복구 알림 전송                         | P2       | Node 중단           |
 | **FR-14** | Active Core 변경 시 `A-03` 토픽으로 Client 재연결 유도                            | P2       | Core 중단           |
+| **FR-15** | Edge_broker가 Core로부터 수신한 CT를 Local mosquitto에 retained로 재발행 — publisher_client가 Edge WebSocket에서 CT 수신 가능 | P1 | Publisher Failover |
+| **FR-16** | JS publisher_client가 `campus/monitor/topology` 구독 후 **다른 ONLINE Edge 후보 중 RTT+hop_to_core 기준 최적 Edge**를 자동 선택하고, Edge 후보가 없으면 **Active Core 직접 연결**로 Failover 수행 | P1 | Publisher Failover |
+| **FR-17** | publisher_client가 CT-OFFLINE 감지(사전) + WebSocket disconnect(사후) 두 경로로 Failover 트리거, **stale CT(version 감소/동일) 무시**, Primary Edge 복구 시 더 최신 CT 기준으로 자동 복귀 | P1 | Publisher Failover |
+| **FR-19** | Publisher 계열(pub_sim, publisher_client)은 마지막으로 본 Active Core endpoint를 캐시하여, **CT가 비어 있는 스냅샷(`nodes=[]`)만 남아도 direct-core fallback** 을 수행 | P1 | Publisher Failover |
+| **FR-18** | 모니터링 Client 이벤트 카드에 Publisher ID(`pub:xxxx`) 표시 — `payload.description` 내 중첩 JSON에서 추출 | P2 | 이벤트 식별 |
 
 ---
 

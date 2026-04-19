@@ -10,6 +10,8 @@
 #include <string>
 #include "edge_helpers.h"
 #include "connection_table_manager.h"
+#include "mqtt_json.h"
+#include "publisher_helpers.h"
 
 // ── 미니 테스트 러너 ──────────────────────────────────────────────────────────
 
@@ -137,6 +139,34 @@ static void tc_parse_building_camera() {
     CHECK_STREQ(cam, "");
 
     end_test("TC-03: parse_building_camera — 토픽에서 building/camera 추출");
+}
+
+// ── TC-03A: extract_nested_event_origin_node ─────────────────────────────────
+
+static void tc_extract_nested_event_origin_node() {
+    begin_test("TC-03A: extract_nested_event_origin_node — nested publisher route.original_node 추출");
+
+    MqttMessage nested = {};
+    CHECK_TRUE(build_event_message(SELF_ID, MSG_TYPE_INTRUSION,
+                                   "building-a", "cam-01", "sim", 1, &nested));
+
+    std::strncpy(nested.route.original_node, NODE_B, UUID_LEN - 1);
+    nested.route.original_node[UUID_LEN - 1] = '\0';
+    std::string json = mqtt_message_to_json(nested);
+
+    char out[UUID_LEN] = {};
+    CHECK_TRUE(extract_nested_event_origin_node(json, out, sizeof(out)));
+    CHECK_STREQ(out, NODE_B);
+
+    std::strncpy(nested.route.original_node, nested.source.id, UUID_LEN - 1);
+    nested.route.original_node[UUID_LEN - 1] = '\0';
+    json = mqtt_message_to_json(nested);
+
+    std::memset(out, 0, sizeof(out));
+    CHECK_FALSE(extract_nested_event_origin_node(json, out, sizeof(out)));
+    CHECK_FALSE(extract_nested_event_origin_node("{bad-json", out, sizeof(out)));
+
+    end_test("TC-03A: extract_nested_event_origin_node — nested publisher route.original_node 추출");
 }
 
 // ── TC-04: select_relay_node — RTT 최소 노드 선택 ────────────────────────────
@@ -402,6 +432,7 @@ int main() {
     tc_infer_msg_type();
     tc_infer_priority();
     tc_parse_building_camera();
+    tc_extract_nested_event_origin_node();
     tc_select_relay_rtt_min();
     tc_select_relay_hop_tiebreak();
     tc_select_relay_offline_excluded();

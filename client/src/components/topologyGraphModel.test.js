@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildTopologyGraphLinks,
   buildTopologyNodeLabel,
   buildTopologyNodePositions,
   classifyTopologyLink,
   classifyTopologyNode,
+  formatTopologyLinkRtt,
 } from './topologyGraphModel.js';
 
 const ACTIVE_CORE = 'active-core-uuid';
@@ -57,11 +59,11 @@ test('classifyTopologyLink leaves non core-node links unchanged', () => {
 
   assert.equal(
     classifyTopologyLink(topology, { from_id: EDGE_A, to_id: EDGE_B }),
-    'default-link',
+    'peer-link',
   );
   assert.equal(
     classifyTopologyLink(topology, { from_id: ACTIVE_CORE, to_id: BACKUP_CORE }),
-    'default-link',
+    'core-peer-link',
   );
 });
 
@@ -112,4 +114,43 @@ test('buildTopologyNodePositions keeps active and backup cores together on the t
     Object.values(positions).map((position) => Math.round(position.x / 10)),
   );
   assert.ok(distinctColumns.size >= 3);
+});
+
+test('formatTopologyLinkRtt renders readable millisecond labels', () => {
+  assert.equal(formatTopologyLinkRtt(0.42), '0.42 ms');
+  assert.equal(formatTopologyLinkRtt(8.2), '8.2 ms');
+  assert.equal(formatTopologyLinkRtt(21.4), '21 ms');
+  assert.equal(formatTopologyLinkRtt(0), '');
+});
+
+test('buildTopologyGraphLinks keeps peer links and averages reverse RTT samples', () => {
+  const topology = {
+    ...makeTopology(),
+    links: [
+      { from_id: EDGE_A, to_id: EDGE_B, rtt_ms: 14 },
+      { from_id: EDGE_B, to_id: EDGE_A, rtt_ms: 10 },
+      { from_id: ACTIVE_CORE, to_id: EDGE_A, rtt_ms: 2 },
+    ],
+  };
+
+  const graphLinks = buildTopologyGraphLinks(topology, topology.nodes);
+  const peerLink = graphLinks.find(link => link.edgeKind === 'peer-link');
+  const activeLink = graphLinks.find(link => link.edgeKind === 'active-link');
+
+  assert.equal(graphLinks.length, 2);
+  assert.deepEqual(
+    {
+      from_id: peerLink.from_id,
+      to_id: peerLink.to_id,
+      edgeKind: peerLink.edgeKind,
+      rttLabel: peerLink.rttLabel,
+    },
+    {
+      from_id: EDGE_A,
+      to_id: EDGE_B,
+      edgeKind: 'peer-link',
+      rttLabel: '12 ms',
+    },
+  );
+  assert.equal(activeLink.rttLabel, '2.0 ms');
 });

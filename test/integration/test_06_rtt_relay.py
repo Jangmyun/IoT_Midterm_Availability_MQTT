@@ -27,20 +27,27 @@ from conftest import (
 @pytest.fixture
 def two_edges(tmp_path, active_core):
     """Active Core 위에 Edge 2개를 순서대로 기동한다."""
+    import os
     log1 = tmp_path / "edge1.log"
     log2 = tmp_path / "edge2.log"
+    os.environ["EDGE_ID_SUFFIX"] = "-1"
+    os.environ["EDGE_NODE_PORT"] = str(MQTT_PORT)
     with run_proc(
-        EDGE_BINARY, MQTT_HOST, str(MQTT_PORT), MQTT_HOST, str(MQTT_PORT),
+        EDGE_BINARY, "127.0.0.1", str(MQTT_PORT), "127.0.0.1", str(MQTT_PORT),
         startup_log_pattern=r"\[edge\] registered to",
         startup_timeout=10.0,
         log_path=log1,
     ) as proc1:
+        os.environ["EDGE_ID_SUFFIX"] = "-2"
+        os.environ["EDGE_NODE_PORT"] = str(MQTT_PORT + 1)
         with run_proc(
-            EDGE_BINARY, MQTT_HOST, str(MQTT_PORT), MQTT_HOST, str(MQTT_PORT),
+            EDGE_BINARY, "127.0.0.1", str(MQTT_PORT), "127.0.0.1", str(MQTT_PORT),
             startup_log_pattern=r"\[edge\] registered to",
             startup_timeout=10.0,
             log_path=log2,
         ) as proc2:
+            os.environ.pop("EDGE_ID_SUFFIX", None)
+            os.environ.pop("EDGE_NODE_PORT", None)
             yield (proc1, log1), (proc2, log2)
 
 

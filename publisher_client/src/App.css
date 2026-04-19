@@ -1,3 +1,9 @@
+/* ── CT / Failover 상태 표시 ──────────────────────────────────────────────── */
+
+.ct-ok      { color: #4ade80; font-weight: 600; }
+.ct-waiting { color: #fbbf24; }
+.failover-badge { color: #f97316; font-weight: 600; }
+
 /* ── Layout ───────────────────────────────────────────────────────────────── */
 
 .app {
@@ -168,6 +174,8 @@
 
 .badge--red    { background: rgba(244,67,54,.15);  color: #ff6b6b; }
 .badge--orange { background: rgba(255,152,0,.15);  color: var(--warning); }
+.badge--green  { background: rgba(76,175,80,.15);  color: var(--success); }
+.badge--purple { background: rgba(99,102,241,.18); color: #a5b4fc; }
 .badge--gray   { background: rgba(136,136,136,.15);color: var(--text-dim); }
 
 .status-badge--connected    { background: rgba(76,175,80,.2);  color: var(--success); }
@@ -351,4 +359,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+
+.event-log__broker {
+  color: var(--text-dim);
+  font-size: 11px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

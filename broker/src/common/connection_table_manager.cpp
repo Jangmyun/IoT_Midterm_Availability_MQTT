@@ -151,6 +151,11 @@ void ConnectionTableManager::setBackupCoreId(const char* id) {
     bumpVersion();
 }
 
+void ConnectionTableManager::replace(const ConnectionTable& table) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    table_ = table;
+}
+
 // Serialization =====================================================
 
 ConnectionTable ConnectionTableManager::snapshot() const {

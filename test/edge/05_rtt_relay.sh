@@ -6,15 +6,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
 
-require_mqtt_tools
+require_cmd mosquitto mosquitto_pub mosquitto_sub
 make_run_dir "edge-rtt-relay" >/dev/null
 setup_cleanup_trap
 
 core_log="$TEST_RUN_DIR/core.log"
 edge1_log="$TEST_RUN_DIR/edge1.log"
 edge2_log="$TEST_RUN_DIR/edge2.log"
+edge1_broker_log="$TEST_RUN_DIR/edge1-broker.log"
+edge2_broker_log="$TEST_RUN_DIR/edge2-broker.log"
 
 binary="$(edge_binary)"
+edge1_local_port="${EDGE1_LOCAL_PORT:-2883}"
+edge2_local_port="${EDGE2_LOCAL_PORT:-3883}"
+
+start_local_broker() {
+  local port="$1"
+  local log_file="$2"
+  mosquitto -p "$port" >"$log_file" 2>&1 &
+  register_pid "$!"
+  printf '%s\n' "$!"
+}
 
 # 잔류 retained 토픽 클리어 (이전 테스트 실행의 오염된 CT 제거)
 mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -t "campus/monitor/topology" -n -r 2>/dev/null || true
@@ -27,10 +39,15 @@ if ! wait_for_pattern "$core_log" '\[core\] connected' 10; then
   die "core did not connect to broker"
 fi
 
+start_local_broker "$edge1_local_port" "$edge1_broker_log" >/dev/null
+start_local_broker "$edge2_local_port" "$edge2_broker_log" >/dev/null
+sleep 1
+
 # Edge1 기동
-"$binary" "$MQTT_HOST" "$MQTT_PORT" "$MQTT_HOST" "$MQTT_PORT" \
+"$binary" "$MQTT_HOST" "$edge1_local_port" "$MQTT_HOST" "$MQTT_PORT" \
   >"$edge1_log" 2>&1 &
-register_pid "$!"
+edge1_pid="$!"
+register_pid "$edge1_pid"
 
 if ! wait_for_pattern "$edge1_log" '\[edge\] registered to' 10; then
   show_file_tail "$edge1_log"
@@ -38,9 +55,10 @@ if ! wait_for_pattern "$edge1_log" '\[edge\] registered to' 10; then
 fi
 
 # Edge2 기동
-"$binary" "$MQTT_HOST" "$MQTT_PORT" "$MQTT_HOST" "$MQTT_PORT" \
+"$binary" "$MQTT_HOST" "$edge2_local_port" "$MQTT_HOST" "$MQTT_PORT" \
   >"$edge2_log" 2>&1 &
-register_pid "$!"
+edge2_pid="$!"
+register_pid "$edge2_pid"
 
 if ! wait_for_pattern "$edge2_log" '\[edge\] registered to' 10; then
   show_file_tail "$edge2_log"

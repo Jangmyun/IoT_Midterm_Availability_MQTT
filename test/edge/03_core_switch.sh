@@ -7,16 +7,23 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
 source "$SCRIPT_DIR/../lib/payloads.sh"
 
-require_mqtt_tools
+require_cmd mosquitto mosquitto_pub mosquitto_sub
 make_run_dir "edge-core-switch" >/dev/null
 setup_cleanup_trap
 
 core_log="$TEST_RUN_DIR/core.log"
 edge_log="$TEST_RUN_DIR/edge.log"
+replacement_broker_log="$TEST_RUN_DIR/replacement-broker.log"
 
-# 현재 연결 중인 Core와 다른 주소 (실제로는 없는 포트 — 재연결 시도 로그만 확인)
+# 현재 연결 중인 Core와 다른 주소
 NEW_CORE_IP="$MQTT_HOST"
-NEW_CORE_PORT=19883
+NEW_CORE_PORT="${EDGE_CORE_SWITCH_NEW_PORT:-$((20000 + (${RANDOM:-42} % 10000)))}"
+
+start_replacement_broker() {
+  mosquitto -p "$NEW_CORE_PORT" -v >"$replacement_broker_log" 2>&1 &
+  register_pid "$!"
+  printf '%s\n' "$!"
+}
 
 start_core "$core_log" >/dev/null
 if ! wait_for_pattern "$core_log" '\[core\] connected' 10; then
@@ -30,6 +37,11 @@ if ! wait_for_pattern "$edge_log" '\[edge\] registered to' 10; then
   die "edge did not finish registration"
 fi
 
+start_replacement_broker >/dev/null
+sleep 1
+
+core_connect_count="$(grep -c '\[edge\] connected to core' "$edge_log" || true)"
+
 # core_switch 발행: description = "NEW_IP:NEW_PORT" 형식의 STATUS 메시지
 sw_payload="$(emit_status_json "CORE" "$(gen_uuid)" "NODE" "all" \
   "${NEW_CORE_IP}:${NEW_CORE_PORT}")"
@@ -42,10 +54,21 @@ if ! wait_for_pattern "$edge_log" \
   die "edge did not attempt reconnect after core_switch"
 fi
 
-# 기존 Core에서 disconnect 확인
-if ! wait_for_pattern "$edge_log" 'disconnected from core' 10; then
+# 새 Core로 실제 재연결 확인
+deadline=$((SECONDS + 10))
+while (( SECONDS < deadline )); do
+  current_count="$(grep -c '\[edge\] connected to core' "$edge_log" || true)"
+  if (( current_count > core_connect_count )); then
+    break
+  fi
+  sleep 1
+done
+
+current_count="$(grep -c '\[edge\] connected to core' "$edge_log" || true)"
+if (( current_count <= core_connect_count )); then
   show_file_tail "$edge_log"
-  die "edge did not disconnect from previous core"
+  show_file_tail "$replacement_broker_log"
+  die "edge did not reconnect to replacement core after core_switch"
 fi
 
 log "core_switch ok: edge reconnecting to ${NEW_CORE_IP}:${NEW_CORE_PORT}"

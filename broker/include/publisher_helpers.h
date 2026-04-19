@@ -170,6 +170,183 @@ inline long rate_to_sleep_us(int rate_hz)
     return (long)(1000000L / rate_hz);
 }
 
+// ── Failover 로직 (Phase 7): CT 기반 대체 브로커 자동 선택 ───────────────────
+
+// select_fallback_broker() 반환값
+struct FallbackBroker {
+    char id[UUID_LEN];
+    char ip[IP_LEN];
+    uint16_t port;
+    bool found;          // 후보가 있으면 true
+};
+
+inline void fill_fallback_broker(const NodeEntry& node, FallbackBroker* out)
+{
+    if (!out) return;
+    *out = {};
+    std::strncpy(out->id, node.id, UUID_LEN - 1);
+    out->id[UUID_LEN - 1] = '\0';
+    std::strncpy(out->ip, node.ip, IP_LEN - 1);
+    out->ip[IP_LEN - 1] = '\0';
+    out->port  = node.port;
+    out->found = true;
+}
+
+inline bool is_online_broker_node(const NodeEntry& node)
+{
+    return node.status == NODE_STATUS_ONLINE &&
+           node.ip[0] != '\0' &&
+           node.port != 0;
+}
+
+inline float lookup_link_rtt(const ConnectionTable& ct,
+                             const char* from_id,
+                             const char* to_id)
+{
+    if (!from_id || from_id[0] == '\0' || !to_id || to_id[0] == '\0')
+        return FLT_MAX;
+
+    float best_rtt = FLT_MAX;
+    for (int i = 0; i < ct.link_count; i++)
+    {
+        const bool same_direction =
+            std::strncmp(ct.links[i].from_id, from_id, UUID_LEN) == 0 &&
+            std::strncmp(ct.links[i].to_id, to_id, UUID_LEN) == 0;
+        const bool reverse_direction =
+            std::strncmp(ct.links[i].from_id, to_id, UUID_LEN) == 0 &&
+            std::strncmp(ct.links[i].to_id, from_id, UUID_LEN) == 0;
+        if (!same_direction && !reverse_direction)
+            continue;
+
+        if (ct.links[i].rtt_ms < best_rtt)
+            best_rtt = ct.links[i].rtt_ms;
+    }
+
+    return best_rtt;
+}
+
+inline const NodeEntry* find_online_core_by_id(const ConnectionTable& ct,
+                                               const char* core_id)
+{
+    if (!core_id || core_id[0] == '\0')
+        return nullptr;
+
+    for (int i = 0; i < ct.node_count; i++)
+    {
+        const NodeEntry& node = ct.nodes[i];
+        if (node.role != NODE_ROLE_CORE)
+            continue;
+        if (!is_online_broker_node(node))
+            continue;
+        if (std::strncmp(node.id, core_id, UUID_LEN) == 0)
+            return &ct.nodes[i];
+    }
+
+    return nullptr;
+}
+
+inline const NodeEntry* select_best_node_by_rtt_and_hop(const ConnectionTable& ct,
+                                                        NodeRole role,
+                                                        const char* primary_edge_id,
+                                                        const char* exclude_a = nullptr,
+                                                        const char* exclude_b = nullptr)
+{
+    const NodeEntry* best = nullptr;
+    float best_rtt = FLT_MAX;
+    int best_hop = INT_MAX;
+
+    for (int i = 0; i < ct.node_count; i++)
+    {
+        const NodeEntry& node = ct.nodes[i];
+        if (node.role != role)
+            continue;
+        if (!is_online_broker_node(node))
+            continue;
+        if (exclude_a && exclude_a[0] != '\0' &&
+            std::strncmp(node.id, exclude_a, UUID_LEN) == 0)
+            continue;
+        if (exclude_b && exclude_b[0] != '\0' &&
+            std::strncmp(node.id, exclude_b, UUID_LEN) == 0)
+            continue;
+
+        const float rtt = lookup_link_rtt(ct, primary_edge_id, node.id);
+        if (!best ||
+            rtt < best_rtt ||
+            (rtt == best_rtt && node.hop_to_core < best_hop))
+        {
+            best = &ct.nodes[i];
+            best_rtt = rtt;
+            best_hop = node.hop_to_core;
+        }
+    }
+
+    return best;
+}
+
+// Core fallback 후보를 선택한다.
+// active core를 최우선으로 하고, 없으면 backup core, 둘 다 없으면 ONLINE core 중 RTT/hop 기준으로 선택.
+inline FallbackBroker select_preferred_core_broker(const ConnectionTable& ct,
+                                                   const char* primary_edge_id)
+{
+    FallbackBroker result = {};
+
+    const NodeEntry* active_core = find_online_core_by_id(ct, ct.active_core_id);
+    if (active_core) {
+        fill_fallback_broker(*active_core, &result);
+        return result;
+    }
+
+    const NodeEntry* backup_core = find_online_core_by_id(ct, ct.backup_core_id);
+    if (backup_core) {
+        fill_fallback_broker(*backup_core, &result);
+        return result;
+    }
+
+    const NodeEntry* best_other_core = select_best_node_by_rtt_and_hop(
+        ct, NODE_ROLE_CORE, primary_edge_id, ct.active_core_id, ct.backup_core_id);
+    if (best_other_core) {
+        fill_fallback_broker(*best_other_core, &result);
+    }
+
+    return result;
+}
+
+// CT에서 ONLINE 노드 중 primary_edge_id를 제외하고 최적 대체 브로커 선택 (FR-08 확장)
+//   1차 기준: 다른 Edge(NODE_ROLE_NODE) 중 RTT 최소, 동점 시 hop_to_core 최소
+//   Edge 후보가 없으면 active core → backup core → 기타 ONLINE core 순으로 선택
+//   모두 OFFLINE이면 found=false
+inline FallbackBroker select_fallback_broker(const ConnectionTable& ct,
+                                             const char* primary_edge_id)
+{
+    FallbackBroker result = {};
+
+    const NodeEntry* best_edge = select_best_node_by_rtt_and_hop(
+        ct, NODE_ROLE_NODE, primary_edge_id, primary_edge_id, nullptr);
+    if (best_edge) {
+        fill_fallback_broker(*best_edge, &result);
+        return result;
+    }
+
+    return select_preferred_core_broker(ct, primary_edge_id);
+}
+
+// primary edge가 CT에서 ONLINE 상태인지 확인 — ONLINE이면 원래 Edge로 복귀
+inline bool should_return_to_primary(const ConnectionTable& ct,
+                                      const char* primary_edge_id)
+{
+    if (!primary_edge_id || primary_edge_id[0] == '\0')
+        return false;
+
+    for (int i = 0; i < ct.node_count; i++)
+    {
+        if (std::strncmp(ct.nodes[i].id, primary_edge_id, UUID_LEN) == 0)
+        {
+            return ct.nodes[i].status == NODE_STATUS_ONLINE;
+        }
+    }
+    return false;  // CT에 없으면 복귀 불가
+}
+
 // ── parse_publisher_args ──────────────────────────────────────────────────────
 
 // argv 에서 "--events" 인자 파싱: "motion,door,intrusion" → event_mask
