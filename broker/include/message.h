@@ -102,3 +102,4 @@ typedef struct {
 #define TOPIC_RTT_ALL               "campus/monitor/rtt/#"            /* Core subscribe */
 #define TOPIC_PING_PREFIX           "campus/monitor/ping/"            /* M-01 subscribe prefix */
 #define TOPIC_PONG_PREFIX           "campus/monitor/pong/"            /* M-02 publish prefix */
+#define TOPIC_RELAY_ACK_PREFIX      "campus/relay/ack/"               /* R-02 application-level ACK prefix */
