@@ -705,6 +705,22 @@ static void handle_topology_message(struct mosquitto* /*mosq*/, void* userdata,
         }
     }
 
+    // 구조 변화 여부 판단: 새로운 ONLINE 노드가 생겼거나 OFFLINE→ONLINE 전환이 있으면 ping 필요
+    ConnectionTable prev_ct = ctx->ct_manager->snapshot();
+    bool structural_change = false;
+    for (int i = 0; i < ct.node_count; i++) {
+        if (ct.nodes[i].status != NODE_STATUS_ONLINE) continue;
+        bool found_online = false;
+        for (int j = 0; j < prev_ct.node_count; j++) {
+            if (std::strncmp(ct.nodes[i].id, prev_ct.nodes[j].id, UUID_LEN) == 0 &&
+                prev_ct.nodes[j].status == NODE_STATUS_ONLINE) {
+                found_online = true;
+                break;
+            }
+        }
+        if (!found_online) { structural_change = true; break; }
+    }
+
     ctx->ct_manager->replace(ct);
     ctx->last_ct_version = ct.version;
     std::printf("[edge] CT applied (version=%d, nodes=%d)\n", ct.version, ct.node_count);
@@ -716,7 +732,10 @@ static void handle_topology_message(struct mosquitto* /*mosq*/, void* userdata,
             (int)ct_raw.size(), ct_raw.c_str(), 1, true);
     }
 
-    send_pings_to_nodes(ctx);
+    // 새 ONLINE 노드가 있을 때만 ping (RTT-only 변경 시 반복 ping 방지)
+    if (structural_change) {
+        send_pings_to_nodes(ctx);
+    }
 }
 
 static void on_message_upstream(struct mosquitto* mosq, void* userdata,
