@@ -97,6 +97,14 @@ One-command startup
     ./demo/presentation-hm-rpi1.sh backup-core
     ./demo/presentation-hm-rpi1.sh backup-core <actual_rpi_ip>
 
+Failover 후 원래 Active를 Backup으로 재진입:
+  ./demo/presentation-hm-rpi1.sh rejoin-as-backup
+  ./demo/presentation-hm-rpi1.sh rejoin-as-backup <self_host> [self_port] [new_active_host] [new_active_port]
+
+  기본값: self=$ACTIVE_HOST:$ACTIVE_PORT, new_active=$BACKUP_HOST:$BACKUP_PORT
+  예) Active(192.168.0.7)가 죽고 Backup(192.168.0.8)이 승격된 경우:
+    ./demo/presentation-hm-rpi1.sh rejoin-as-backup
+
 Typical edge command
   ./demo/presentation-hm-rpi1.sh edge <local_host> <local_port>
 EOF
@@ -120,6 +128,20 @@ run_backup_core() {
   exec "$BUILD_DIR/core_broker" \
     "$self_host" "$self_port" \
     "$ACTIVE_HOST" "$ACTIVE_PORT"
+}
+
+run_rejoin_as_backup() {
+  # Failover 후 원래 Active가 새 Active(= 승격된 Backup)에 peer 연결하여 재진입
+  local self_host="${1:-$ACTIVE_HOST}"
+  local self_port="${2:-$ACTIVE_PORT}"
+  local new_active_host="${3:-$BACKUP_HOST}"
+  local new_active_port="${4:-$BACKUP_PORT}"
+  assert_current_host_matches "$self_host"
+  require_binary "$BUILD_DIR/core_broker"
+  info "rejoining as backup: self=$self_host:$self_port  new_active=$new_active_host:$new_active_port"
+  exec "$BUILD_DIR/core_broker" \
+    "$self_host" "$self_port" \
+    "$new_active_host" "$new_active_port"
 }
 
 run_active_sub() {
@@ -157,6 +179,9 @@ case "${1:-show}" in
     ;;
   backup-core)
     run_backup_core "${2:-}" "${3:-}"
+    ;;
+  rejoin-as-backup)
+    run_rejoin_as_backup "${2:-}" "${3:-}" "${4:-}" "${5:-}"
     ;;
   active-sub)
     run_active_sub
