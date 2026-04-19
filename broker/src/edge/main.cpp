@@ -429,12 +429,85 @@ static void send_pings_to_nodes(EdgeContext* ctx)
         mosquitto_publish(core->mosq, nullptr, topic,
             (int)json.size(), json.c_str(), 0, false);
 
+        // 로컬 브로커에도 발행 → peer-only edge 가 로컬 브로커를 통해 ping 수신 가능
+        if (ctx->mosq_local)
+            mosquitto_publish(ctx->mosq_local, nullptr, topic,
+                (int)json.size(), json.c_str(), 0, false);
+
         std::printf("[edge] ping sent to %s\n", n.id);
     }
 }
 
 // Forward declaration (pong 핸들러에서 호출)
 static void maybe_establish_peer_conn(EdgeContext* ctx, const std::string& peer_node_id);
+
+// Ping/Pong 공통 처리 헬퍼 (CORE·PEER_EDGE upstream 및 local broker 모두 사용)
+static void process_ping(struct mosquitto* reply_mosq, EdgeContext* ctx,
+    const struct mosquitto_message* msg)
+{
+    MqttMessage ping;
+    std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+    if (!mqtt_message_from_json(json, ping))
+        return;
+
+    MqttMessage pong = {};
+    uuid_generate(pong.msg_id);
+    pong.type = MSG_TYPE_PING_RESPONSE;
+    pong.source.role = NODE_ROLE_NODE;
+    std::strncpy(pong.source.id, ctx->edge_id, UUID_LEN - 1);
+    pong.source.id[UUID_LEN - 1] = '\0';
+    pong.target.role = NODE_ROLE_NODE;
+    std::strncpy(pong.target.id, ping.source.id, UUID_LEN - 1);
+    pong.target.id[UUID_LEN - 1] = '\0';
+    pong.delivery = { 0, false, false };
+
+    char pong_topic[128];
+    std::snprintf(pong_topic, sizeof(pong_topic), "%s%s",
+        TOPIC_PONG_PREFIX, ping.source.id);
+
+    std::string pong_json = mqtt_message_to_json(pong);
+    mosquitto_publish(reply_mosq, nullptr, pong_topic,
+        (int)pong_json.size(), pong_json.c_str(), 0, false);
+}
+
+static void process_pong(EdgeContext* ctx, const struct mosquitto_message* msg)
+{
+    MqttMessage pong;
+    std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+    if (!mqtt_message_from_json(json, pong))
+        return;
+
+    if (std::strncmp(pong.target.id, ctx->edge_id, UUID_LEN) != 0)
+        return;
+
+    auto recv_time = std::chrono::steady_clock::now();
+    float rtt_ms = 0.0f;
+    {
+        std::lock_guard<std::mutex> lock(ctx->ping_mutex);
+        auto it = ctx->ping_send_times.find(pong.source.id);
+        if (it == ctx->ping_send_times.end())
+            return;
+        rtt_ms = std::chrono::duration<float, std::milli>(recv_time - it->second).count();
+        ctx->ping_send_times.erase(it);
+    }
+
+    std::printf("[edge] pong from %s: RTT=%.2fms\n", pong.source.id, rtt_ms);
+
+    LinkEntry link = {};
+    std::strncpy(link.from_id, ctx->edge_id, UUID_LEN - 1);
+    std::strncpy(link.to_id, pong.source.id, UUID_LEN - 1);
+    link.rtt_ms = rtt_ms;
+    ctx->ct_manager->addLink(link);
+
+    std::string best = select_relay_node(*ctx->ct_manager, ctx->edge_id);
+    if (!best.empty())
+    {
+        std::strncpy(ctx->relay_node_id, best.c_str(), UUID_LEN - 1);
+        ctx->relay_node_id[UUID_LEN - 1] = '\0';
+        std::printf("[edge] relay node selected: %s\n", ctx->relay_node_id);
+        maybe_establish_peer_conn(ctx, best);
+    }
+}
 
 // Callbacks =====================================================
 
@@ -490,6 +563,13 @@ static void on_connect_upstream(struct mosquitto* mosq, void* userdata, int rc)
         std::printf("[edge] connected to peer edge (%s)\n", up.ip);
         // PEER_ONLY 모드에서 CT 수신을 위해 topology 구독
         mosquitto_subscribe(mosq, nullptr, TOPIC_TOPOLOGY, 1);
+        {
+            // peer 브로커를 통해 ping 수신 가능하도록 자신의 ping 토픽 구독
+            char ping_topic_p[128];
+            std::snprintf(ping_topic_p, sizeof(ping_topic_p),
+                "%s%s", TOPIC_PING_PREFIX, ctx->edge_id);
+            mosquitto_subscribe(mosq, nullptr, ping_topic_p, 0);
+        }
         publish_edge_status(up.mosq, ctx, "peer edge");
         flush_store_queue(ctx);
         break;
@@ -588,6 +668,18 @@ static void on_message_upstream(struct mosquitto* mosq, void* userdata,
     if (std::strcmp(msg->topic, TOPIC_TOPOLOGY) == 0)
     {
         handle_topology_message(mosq, userdata, msg);
+        return;
+    }
+
+    // Ping/Pong: CORE · PEER_EDGE 모두 처리 (peer-only edge 경유 RTT 지원)
+    if (std::strncmp(msg->topic, TOPIC_PING_PREFIX, std::strlen(TOPIC_PING_PREFIX)) == 0)
+    {
+        process_ping(mosq, ctx, msg);
+        return;
+    }
+    if (std::strncmp(msg->topic, TOPIC_PONG_PREFIX, std::strlen(TOPIC_PONG_PREFIX)) == 0)
+    {
+        process_pong(ctx, msg);
         return;
     }
 
@@ -692,79 +784,6 @@ static void on_message_upstream(struct mosquitto* mosq, void* userdata,
         }
     }
 
-    // Pong 수신 → RTT 계산 + LinkEntry 갱신 + Relay Node 선택 (FR-08, M-02)
-    if (std::strncmp(msg->topic, TOPIC_PONG_PREFIX, std::strlen(TOPIC_PONG_PREFIX)) == 0)
-    {
-        MqttMessage pong;
-        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
-        if (!mqtt_message_from_json(json, pong))
-            return;
-
-        if (std::strncmp(pong.target.id, ctx->edge_id, UUID_LEN) != 0)
-            return;
-
-        auto recv_time = std::chrono::steady_clock::now();
-        float rtt_ms = 0.0f;
-        {
-            std::lock_guard<std::mutex> lock(ctx->ping_mutex);
-            auto it = ctx->ping_send_times.find(pong.source.id);
-            if (it == ctx->ping_send_times.end())
-                return;
-            rtt_ms = std::chrono::duration<float, std::milli>(recv_time - it->second).count();
-            ctx->ping_send_times.erase(it);
-        }
-
-        std::printf("[edge] pong from %s: RTT=%.2fms\n", pong.source.id, rtt_ms);
-
-        LinkEntry link = {};
-        std::strncpy(link.from_id, ctx->edge_id, UUID_LEN - 1);
-        std::strncpy(link.to_id, pong.source.id, UUID_LEN - 1);
-        link.rtt_ms = rtt_ms;
-        ctx->ct_manager->addLink(link);
-
-        std::string best = select_relay_node(*ctx->ct_manager, ctx->edge_id);
-        if (!best.empty())
-        {
-            std::strncpy(ctx->relay_node_id, best.c_str(), UUID_LEN - 1);
-            ctx->relay_node_id[UUID_LEN - 1] = '\0';
-            std::printf("[edge] relay node selected: %s\n", ctx->relay_node_id);
-
-            // RTT 측정 후 peer 연결 동적 추가
-            maybe_establish_peer_conn(ctx, best);
-        }
-        return;
-    }
-
-    // Ping 수신 → Pong 응답 (M-01 / M-02)
-    if (std::strncmp(msg->topic, TOPIC_PING_PREFIX, std::strlen(TOPIC_PING_PREFIX)) == 0)
-    {
-        MqttMessage ping;
-        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
-        if (!mqtt_message_from_json(json, ping))
-            return;
-
-        MqttMessage pong = {};
-        uuid_generate(pong.msg_id);
-        pong.type = MSG_TYPE_PING_RESPONSE;
-        pong.source.role = NODE_ROLE_NODE;
-        std::strncpy(pong.source.id, ctx->edge_id, UUID_LEN - 1);
-        pong.source.id[UUID_LEN - 1] = '\0';
-
-        pong.target.role = NODE_ROLE_NODE;
-        std::strncpy(pong.target.id, ping.source.id, UUID_LEN - 1);
-        pong.target.id[UUID_LEN - 1] = '\0';
-
-        pong.delivery = { 0, false, false };
-
-        char pong_topic[128];
-        std::snprintf(pong_topic, sizeof(pong_topic), "%s%s",
-            TOPIC_PONG_PREFIX, ping.source.id);
-
-        std::string pong_json = mqtt_message_to_json(pong);
-        mosquitto_publish(mosq, nullptr, pong_topic,
-            (int)pong_json.size(), pong_json.c_str(), 0, false);
-        return;
-    }
 }
 
 // maybe_establish_peer_conn: pong RTT 측정 후 동적 peer 연결 추가
@@ -844,7 +863,6 @@ static void on_connect_local(struct mosquitto* mosq, void* userdata, int rc)
     }
 
     auto* ctx = static_cast<EdgeContext*>(userdata);
-    (void)ctx;
 
     std::printf("[edge] connected to local broker\n");
 
@@ -867,6 +885,14 @@ static void on_connect_local(struct mosquitto* mosq, void* userdata, int rc)
             mosquitto_strerror(sub_rc));
     }
 
+    // peer-only edge 가 local broker 로 응답한 pong 수신을 위해 구독
+    {
+        char pong_topic_l[128];
+        std::snprintf(pong_topic_l, sizeof(pong_topic_l),
+            "%s%s", TOPIC_PONG_PREFIX, ctx->edge_id);
+        mosquitto_subscribe(mosq, nullptr, pong_topic_l, 0);
+    }
+
     std::printf("[edge] subscribed local topics: %s, campus/monitor/status/#\n", data_topic);
 }
 
@@ -880,6 +906,13 @@ static void on_message_local(struct mosquitto* /*mosq*/, void* userdata,
     const struct mosquitto_message* msg)
 {
     auto* ctx = static_cast<EdgeContext*>(userdata);
+
+    // pong 수신 (peer-only edge 가 local broker 로 응답한 경우)
+    if (std::strncmp(msg->topic, TOPIC_PONG_PREFIX, std::strlen(TOPIC_PONG_PREFIX)) == 0)
+    {
+        process_pong(ctx, msg);
+        return;
+    }
 
     // campus/monitor/status/# → 인접 Edge 등록 메시지를 upstream(Core) 으로 전달
     if (std::strncmp(msg->topic, TOPIC_STATUS_PREFIX, std::strlen(TOPIC_STATUS_PREFIX)) == 0)
