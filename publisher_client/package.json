@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test src/mqtt/message.test.js src/mqtt/failover.test.js src/mqtt/ctFailover.test.js",
+    "test": "node --test src/mqtt/message.test.js src/mqtt/failover.test.js src/mqtt/ctFailover.test.js src/hooks/usePublisher.test.js",
     "build": "npm run test && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
