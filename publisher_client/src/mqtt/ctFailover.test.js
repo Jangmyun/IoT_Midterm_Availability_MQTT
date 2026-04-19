@@ -144,6 +144,21 @@ test('selectFallbackBroker: primaryEdgeId null이면 자신 제외 없이 전체
   assert.equal(result.id, 'edge-a');
 });
 
+test('selectFallbackBroker: primaryEdgeId 미해결이어도 primary IP는 제외한다', () => {
+  const ct = makeCt(
+    [
+      makeNode('edge-a', 'NODE', 'ONLINE', '192.168.0.9', 1883, 1),
+      makeNode('edge-b', 'NODE', 'ONLINE', '192.168.0.16', 1883, 1),
+    ],
+    [
+      { from_id: 'edge-a', to_id: 'edge-b', rtt_ms: 20 },
+    ]
+  );
+  const result = selectFallbackBroker(ct, null, '192.168.0.9');
+  assert.equal(result.found, true);
+  assert.equal(result.id, 'edge-b');
+});
+
 // ── shouldReturnToPrimary ───────────────────────────────────────────
 
 test('shouldReturnToPrimary: primary OFFLINE → false', () => {
