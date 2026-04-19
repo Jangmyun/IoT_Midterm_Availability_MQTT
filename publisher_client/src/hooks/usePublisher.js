@@ -16,10 +16,38 @@ const MAX_QUEUE = 100;
 const CLIENT_ID = `pub-${generateUuid().slice(0, 8)}`;
 const RECONNECT_DELAY_MS = 1500;
 const FALLBACK_RETRY_DELAY_MS = 3000;
+const KEEPALIVE_SECONDS = 5;
+const HEALTH_CHECK_INTERVAL_MS = 1000;
+const PUBLISH_ACK_TIMEOUT_MS = 1500;
+const DUPLICATE_PUBLISH_WINDOW_MS = 150;
 const CT_TOPIC = 'campus/monitor/topology';
 
 function trimEventLog(events) {
   return events.slice(0, MAX_LOG);
+}
+
+export function buildPublishAttemptKey({ type, buildingId, cameraId, description = '' }) {
+  return [type, buildingId, cameraId, description].join('\u0001');
+}
+
+export function shouldSuppressDuplicatePublish(
+  previousAttempt,
+  nextKey,
+  now = Date.now(),
+  windowMs = DUPLICATE_PUBLISH_WINDOW_MS,
+) {
+  if (!previousAttempt || !nextKey) return false;
+  return previousAttempt.key === nextKey && (now - previousAttempt.at) < windowMs;
+}
+
+export function isBrokerActivityStale(
+  lastBrokerActivityAt,
+  now = Date.now(),
+  keepaliveSeconds = KEEPALIVE_SECONDS,
+) {
+  if (!lastBrokerActivityAt || keepaliveSeconds <= 0) return false;
+  const staleThresholdMs = Math.ceil((keepaliveSeconds * 1000 * 3) / 2) + 250;
+  return (now - lastBrokerActivityAt) > staleThresholdMs;
 }
 
 export function usePublisher() {
@@ -32,10 +60,14 @@ export function usePublisher() {
 
   const clientRef = useRef(null);
   const reconnectTimerRef = useRef(null);
+  const healthCheckTimerRef = useRef(null);
   const manualDisconnectRef = useRef(false);
   const queueRef = useRef([]);
+  const pendingPublishesRef = useRef(new Map());
+  const lastPublishAttemptRef = useRef(null);
   const activeBrokerUrlRef = useRef('');
   const cachedCoreUrlRef = useRef('');
+  const lastBrokerActivityAtRef = useRef(0);
   const wsPortRef = useRef(9001);
   const wsProtocolRef = useRef('ws:');
 
@@ -60,14 +92,57 @@ export function usePublisher() {
     reconnectTimerRef.current = null;
   }, []);
 
+  const clearHealthCheckTimer = useCallback(() => {
+    if (!healthCheckTimerRef.current) return;
+    clearInterval(healthCheckTimerRef.current);
+    healthCheckTimerRef.current = null;
+  }, []);
+
+  const queuePublish = useCallback((entry) => {
+    if (queueRef.current.some(item => item.log.msg_id === entry.log.msg_id)) {
+      return false;
+    }
+
+    if (queueRef.current.length >= MAX_QUEUE) {
+      queueRef.current.shift();
+    }
+    queueRef.current.push(entry);
+    setQueueSizeFromRef();
+    return true;
+  }, [setQueueSizeFromRef]);
+
+  const clearPendingPublishes = useCallback((mode = 'discard') => {
+    const entries = [...pendingPublishesRef.current.values()];
+    pendingPublishesRef.current.clear();
+
+    entries.forEach((entry) => {
+      clearTimeout(entry.timeoutId);
+      if (mode !== 'queue' || entry.settled) return;
+      if (!entry.queued) {
+        entry.queued = queuePublish(entry.queueEntry) || entry.queued;
+        upsertEvent({
+          ...entry.queueEntry.log,
+          status: 'queued',
+          brokerUrl: activeBrokerUrlRef.current || entry.queueEntry.log.brokerUrl,
+          sentAt: entry.queueEntry.sentAt,
+        });
+      }
+    });
+  }, [queuePublish, upsertEvent]);
+
+  const markBrokerActivity = useCallback(() => {
+    lastBrokerActivityAtRef.current = Date.now();
+  }, []);
+
   const destroyClient = useCallback((force = true) => {
     clearReconnectTimer();
+    clearHealthCheckTimer();
     const client = clientRef.current;
     clientRef.current = null;
     if (!client) return;
     client.removeAllListeners();
     client.end(force);
-  }, [clearReconnectTimer]);
+  }, [clearHealthCheckTimer, clearReconnectTimer]);
 
   const buildBrokerUrl = useCallback((host) => {
     if (!host) return '';
@@ -125,6 +200,7 @@ export function usePublisher() {
           upsertEvent({ ...item.log, status: 'queued', brokerUrl: activeBrokerUrlRef.current, sentAt: item.sentAt });
           return;
         }
+        markBrokerActivity();
         upsertEvent({
           ...item.log,
           status: item.log.status === 'queued' ? 'flushed' : 'sent',
@@ -133,7 +209,40 @@ export function usePublisher() {
         });
       });
     });
-  }, [applyOriginRoute, isDeliveringViaFallback, setQueueSizeFromRef, upsertEvent]);
+  }, [applyOriginRoute, isDeliveringViaFallback, markBrokerActivity, setQueueSizeFromRef, upsertEvent]);
+
+  const scheduleReconnect = useCallback((delayMs = RECONNECT_DELAY_MS) => {
+    clearReconnectTimer();
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      attemptFailover(); // eslint-disable-line no-use-before-define
+    }, delayMs);
+  }, [clearReconnectTimer]);
+
+  const handleConnectionLoss = useCallback((delayMs = RECONNECT_DELAY_MS) => {
+    if (manualDisconnectRef.current) {
+      setStatus('disconnected');
+      return false;
+    }
+
+    clearPendingPublishes('queue');
+    activeBrokerUrlRef.current = '';
+    setActiveBrokerUrl('');
+    setStatus('disconnected');
+    destroyClient(true);
+    scheduleReconnect(delayMs);
+    return true;
+  }, [clearPendingPublishes, destroyClient, scheduleReconnect]);
+
+  const startHealthCheck = useCallback(() => {
+    clearHealthCheckTimer();
+    healthCheckTimerRef.current = setInterval(() => {
+      const client = clientRef.current;
+      if (!client?.connected || manualDisconnectRef.current) return;
+      if (!isBrokerActivityStale(lastBrokerActivityAtRef.current)) return;
+      handleConnectionLoss(0);
+    }, HEALTH_CHECK_INTERVAL_MS);
+  }, [clearHealthCheckTimer, handleConnectionLoss]);
 
   // 단일 URL로 MQTT 연결 + CT 구독
   const connectToBroker = useCallback((brokerUrl) => {
@@ -146,6 +255,8 @@ export function usePublisher() {
 
     const client = mqtt.connect(brokerUrl, {
       clientId: CLIENT_ID,
+      clean: true,
+      keepalive: KEEPALIVE_SECONDS,
       reconnectPeriod: 0,
       connectTimeout: 5000,
     });
@@ -153,14 +264,27 @@ export function usePublisher() {
 
     client.on('connect', () => {
       if (clientRef.current !== client) return;
+      markBrokerActivity();
       setStatus('connected');
       client.subscribe(CT_TOPIC, { qos: 1 });
+      startHealthCheck();
       flushQueue();
     });
 
     client.on('message', (topic, payload) => {
       if (clientRef.current !== client) return;
+      markBrokerActivity();
       if (topic === CT_TOPIC) handleCtMessage(payload.toString()); // eslint-disable-line no-use-before-define
+    });
+
+    client.on('packetreceive', () => {
+      if (clientRef.current !== client) return;
+      markBrokerActivity();
+    });
+
+    client.on('offline', () => {
+      if (clientRef.current !== client) return;
+      handleConnectionLoss(0);
     });
 
     client.on('close', () => {
@@ -169,22 +293,16 @@ export function usePublisher() {
         setStatus('disconnected');
         return;
       }
-      setStatus('disconnected');
-      clearReconnectTimer();
-      reconnectTimerRef.current = setTimeout(() => {
-        reconnectTimerRef.current = null;
-        attemptFailover(); // eslint-disable-line no-use-before-define
-      }, RECONNECT_DELAY_MS);
+      handleConnectionLoss(RECONNECT_DELAY_MS);
     });
 
     client.on('error', () => {
       if (clientRef.current !== client) return;
-      setStatus('error');
-      client.end(true);
+      handleConnectionLoss(0);
     });
 
     return true;
-  }, [clearReconnectTimer, destroyClient, flushQueue]);
+  }, [destroyClient, flushQueue, handleConnectionLoss, markBrokerActivity, startHealthCheck]);
 
   const schedulePrimaryRetry = useCallback(() => {
     clearReconnectTimer();
@@ -215,13 +333,22 @@ export function usePublisher() {
       return false;
     }
 
-    const fallback = selectFallbackBroker(ct, primaryEdgeIdRef.current);
+    const fallback = selectFallbackBroker(ct, primaryEdgeIdRef.current, primaryIpRef.current);
     if (!fallback.found) {
       schedulePrimaryRetry();
       return false;
     }
 
-    const fallbackUrl = buildBrokerUrl(fallback.ip);
+    let fallbackUrl = buildBrokerUrl(fallback.ip);
+    if (fallbackUrl === primaryBrokerUrlRef.current && cachedCoreUrlRef.current && cachedCoreUrlRef.current !== fallbackUrl) {
+      fallbackUrl = cachedCoreUrlRef.current;
+    }
+
+    if (!fallbackUrl || fallbackUrl === activeBrokerUrlRef.current) {
+      schedulePrimaryRetry();
+      return false;
+    }
+
     const isPrimaryTarget = fallbackUrl === primaryBrokerUrlRef.current;
     onFallbackRef.current = !isPrimaryTarget;
     setOnFallback(!isPrimaryTarget);
@@ -301,6 +428,7 @@ export function usePublisher() {
     onFallbackRef.current = false;
     primaryEdgeIdRef.current = null;
     ctRef.current = null;
+    lastBrokerActivityAtRef.current = 0;
     setCtReceived(false);
     setOnFallback(false);
 
@@ -309,28 +437,31 @@ export function usePublisher() {
 
   const disconnect = useCallback(() => {
     manualDisconnectRef.current = true;
+    lastPublishAttemptRef.current = null;
     primaryBrokerUrlRef.current = '';
     primaryIpRef.current = '';
     cachedCoreUrlRef.current = '';
     onFallbackRef.current = false;
     ctRef.current = null;
+    queueRef.current = [];
+    setQueueSizeFromRef();
+    clearPendingPublishes('discard');
     activeBrokerUrlRef.current = '';
     setActiveBrokerUrl('');
     setCtReceived(false);
     setOnFallback(false);
     destroyClient(true);
     setStatus('disconnected');
-  }, [destroyClient]);
-
-  const queuePublish = useCallback((entry) => {
-    if (queueRef.current.length >= MAX_QUEUE) {
-      queueRef.current.shift();
-    }
-    queueRef.current.push(entry);
-    setQueueSizeFromRef();
-  }, [setQueueSizeFromRef]);
+  }, [clearPendingPublishes, destroyClient, setQueueSizeFromRef]);
 
   const publish = useCallback(({ publisherId, type, buildingId, cameraId, description = '' }) => {
+    const now = Date.now();
+    const publishAttemptKey = buildPublishAttemptKey({ type, buildingId, cameraId, description });
+    if (shouldSuppressDuplicatePublish(lastPublishAttemptRef.current, publishAttemptKey, now)) {
+      return false;
+    }
+    lastPublishAttemptRef.current = { key: publishAttemptKey, at: now };
+
     let msg;
     let topic;
 
@@ -354,40 +485,81 @@ export function usePublisher() {
       ...msg,
       topic,
       brokerUrl: activeBrokerUrlRef.current,
-      sentAt: Date.now(),
+      sentAt: now,
     };
     const queueEntry = { topic, payload, sentAt: baseLog.sentAt, log: baseLog };
 
     const client = clientRef.current;
-    if (!client?.connected) {
+    const brokerLooksStale = isBrokerActivityStale(lastBrokerActivityAtRef.current, now);
+    if (!client?.connected || brokerLooksStale) {
       queuePublish(queueEntry);
       upsertEvent({ ...baseLog, status: 'queued' });
 
       if (!manualDisconnectRef.current && status !== 'connecting') {
-        attemptFailover();
+        handleConnectionLoss(0);
       }
       return false;
     }
 
+    const pendingEntry = {
+      queueEntry,
+      queued: false,
+      settled: false,
+      timeoutId: null,
+    };
+    pendingEntry.timeoutId = setTimeout(() => {
+      const currentPending = pendingPublishesRef.current.get(msg.msg_id);
+      if (!currentPending || currentPending.settled) return;
+
+      currentPending.queued = queuePublish(currentPending.queueEntry) || currentPending.queued;
+      upsertEvent({
+        ...currentPending.queueEntry.log,
+        status: 'queued',
+        brokerUrl: activeBrokerUrlRef.current || currentPending.queueEntry.log.brokerUrl,
+        sentAt: currentPending.queueEntry.sentAt,
+      });
+      pendingPublishesRef.current.delete(msg.msg_id);
+
+      if (!manualDisconnectRef.current && status !== 'connecting') {
+        handleConnectionLoss(0);
+      }
+    }, PUBLISH_ACK_TIMEOUT_MS);
+    pendingPublishesRef.current.set(msg.msg_id, pendingEntry);
+
     client.publish(topic, payload, { qos: 1 }, (error) => {
+      const currentPending = pendingPublishesRef.current.get(msg.msg_id);
+      if (!currentPending) return;
+
+      clearTimeout(currentPending.timeoutId);
+      currentPending.settled = true;
+      pendingPublishesRef.current.delete(msg.msg_id);
+
       if (error) {
-        queuePublish(queueEntry);
-        upsertEvent({ ...baseLog, status: 'queued' });
+        currentPending.queued = queuePublish(currentPending.queueEntry) || currentPending.queued;
+        upsertEvent({
+          ...currentPending.queueEntry.log,
+          status: 'queued',
+          brokerUrl: activeBrokerUrlRef.current || currentPending.queueEntry.log.brokerUrl,
+          sentAt: currentPending.queueEntry.sentAt,
+        });
         if (!manualDisconnectRef.current && status !== 'connecting') {
-          attemptFailover();
+          handleConnectionLoss(0);
         }
         return;
       }
+
+      markBrokerActivity();
       upsertEvent({ ...baseLog, status: 'sent', brokerUrl: activeBrokerUrlRef.current, sentAt: Date.now() });
     });
 
     return true;
-  }, [applyOriginRoute, attemptFailover, isDeliveringViaFallback, queuePublish, status, upsertEvent]);
+  }, [applyOriginRoute, handleConnectionLoss, isDeliveringViaFallback, markBrokerActivity, queuePublish, status, upsertEvent]);
 
   useEffect(() => () => {
     manualDisconnectRef.current = true;
+    clearPendingPublishes('discard');
     destroyClient(true);
-  }, [destroyClient]);
+  }, [clearPendingPublishes, destroyClient]);
 
   return {
     status,

@@ -35,12 +35,17 @@ function isBetterCandidate(candidate, best) {
     (candidate.rtt === best.rtt && candidate.hop < best.hop);
 }
 
-function pickBestCandidate(nodes, links, primaryEdgeId, role) {
+function isExcludedNode(node, primaryEdgeId, primaryEdgeIp) {
+  if (primaryEdgeId && node.id === primaryEdgeId) return true;
+  return !primaryEdgeId && primaryEdgeIp && node.ip === primaryEdgeIp;
+}
+
+function pickBestCandidate(nodes, links, primaryEdgeId, role, primaryEdgeIp = '') {
   let best = null;
 
   for (const node of nodes) {
     if (!isBrokerNode(node, role)) continue;
-    if (node.id === primaryEdgeId) continue;
+    if (isExcludedNode(node, primaryEdgeId, primaryEdgeIp)) continue;
 
     const candidate = buildCandidate(node, links, primaryEdgeId);
     if (isBetterCandidate(candidate, best)) {
@@ -85,14 +90,15 @@ export function findPreferredCoreBroker(ct, primaryEdgeId = null) {
  * Edge 후보가 없으면 active core → backup core → 기타 ONLINE core 순으로 선택한다.
  * @param {object} ct - Connection Table ({ nodes, links })
  * @param {string|null} primaryEdgeId - 현재 연결된 Edge UUID (제외 대상)
+ * @param {string} primaryEdgeIp - 현재 연결된 Edge IP (UUID 미확정 시 제외 대상)
  * @returns {{ found: boolean, id?: string, ip?: string, port?: number }}
  */
-export function selectFallbackBroker(ct, primaryEdgeId) {
+export function selectFallbackBroker(ct, primaryEdgeId, primaryEdgeIp = '') {
   if (!Array.isArray(ct?.nodes) || ct.nodes.length === 0) {
     return { found: false };
   }
 
-  const bestEdge = pickBestCandidate(ct.nodes, ct.links, primaryEdgeId, 'NODE');
+  const bestEdge = pickBestCandidate(ct.nodes, ct.links, primaryEdgeId, 'NODE', primaryEdgeIp);
   if (bestEdge) {
     return { found: true, id: bestEdge.id, ip: bestEdge.ip, port: bestEdge.port };
   }
