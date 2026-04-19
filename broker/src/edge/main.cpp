@@ -392,8 +392,10 @@ static void handle_local_event_delivery(EdgeContext* ctx, const char* topic, con
 // CT 수신 후 ONLINE NODE에 Ping 발송 → RTT 측정 시작 (FR-08)
 static void send_pings_to_nodes(EdgeContext* ctx)
 {
+    // CORE 가 없으면 BACKUP, 없으면 peer-only 모드 (mosq_local 로만 발행)
     UpstreamConn* core = find_upstream(ctx, UpstreamKind::CORE);
-    if (!core)
+    if (!core) core = find_upstream(ctx, UpstreamKind::BACKUP);
+    if (!core && !ctx->mosq_local)
         return;
 
     ConnectionTable ct = ctx->ct_manager->snapshot();
@@ -426,8 +428,9 @@ static void send_pings_to_nodes(EdgeContext* ctx)
         std::snprintf(topic, sizeof(topic), "%s%s", TOPIC_PING_PREFIX, n.id);
 
         std::string json = mqtt_message_to_json(ping);
-        mosquitto_publish(core->mosq, nullptr, topic,
-            (int)json.size(), json.c_str(), 0, false);
+        if (core)
+            mosquitto_publish(core->mosq, nullptr, topic,
+                (int)json.size(), json.c_str(), 0, false);
 
         // 로컬 브로커에도 발행 → peer-only edge 가 로컬 브로커를 통해 ping 수신 가능
         if (ctx->mosq_local)
@@ -948,9 +951,13 @@ static void on_message_local(struct mosquitto* /*mosq*/, void* userdata,
             char relay_topic[256];
             std::snprintf(relay_topic, sizeof(relay_topic),
                 "%s%s/%s", TOPIC_STATUS_RELAY_PREFIX, ctx->edge_id, peer_node_id);
-            mosquitto_publish(up->mosq, nullptr, relay_topic,
+            int rc = mosquitto_publish(up->mosq, nullptr, relay_topic,
                 msg->payloadlen, msg->payload, 1, false);
-            std::printf("[edge] forwarded peer status: %s\n", relay_topic);
+            if (rc == MOSQ_ERR_SUCCESS)
+                std::printf("[edge] forwarded peer status: %s\n", relay_topic);
+            else
+                std::fprintf(stderr, "[edge] failed to forward peer status: %s (rc=%d)\n",
+                    relay_topic, rc);
         }
         return;
     }
@@ -965,7 +972,29 @@ static void on_message_local(struct mosquitto* /*mosq*/, void* userdata,
 
     std::printf("[edge][local] event received\n");
     std::printf("  topic   : %s\n", msg->topic);
-    std::printf("  payload : %s\n", payload.c_str());
+
+    // payload 가 이미 MqttMessage JSON 인지 확인 (peer edge 에서 relay된 경우)
+    // 이중 래핑 방지: 이미 래핑된 메시지는 routing 필드만 갱신 후 그대로 전달
+    MqttMessage already_wrapped = {};
+    if (mqtt_message_from_json(payload, already_wrapped))
+    {
+        std::strncpy(already_wrapped.route.prev_hop, ctx->edge_id, UUID_LEN - 1);
+        already_wrapped.route.prev_hop[UUID_LEN - 1] = '\0';
+        already_wrapped.route.hop_count++;
+
+        if (has_pending_queue(ctx))
+        {
+            flush_store_queue(ctx);
+            if (has_pending_queue(ctx))
+            {
+                queue_event(ctx, msg->topic, already_wrapped);
+                return;
+            }
+        }
+        if (!forward_message_upstream(ctx, msg->topic, already_wrapped))
+            queue_event(ctx, msg->topic, already_wrapped);
+        return;
+    }
 
     handle_local_event_delivery(ctx, msg->topic, payload);
 }

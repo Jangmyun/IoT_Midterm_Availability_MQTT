@@ -52,6 +52,7 @@ def local_broker_a(tmp_path):
     if proc.poll() is None:
         proc.terminate()
         proc.wait()
+    time.sleep(0.5)  # 포트 TIME_WAIT 해소 대기
 
 
 @pytest.fixture
@@ -68,6 +69,7 @@ def local_broker_c(tmp_path):
     if proc.poll() is None:
         proc.terminate()
         proc.wait()
+    time.sleep(0.5)  # 포트 TIME_WAIT 해소 대기
 
 
 # ── Edge 픽스처 ────────────────────────────────────────────────────────────────
@@ -141,8 +143,9 @@ def test_edge_c_event_reaches_core(active_core, edge_a, edge_c, spy):
     """
     EdgeC 로컬 브로커에 발행된 이벤트가
     EdgeC → (PEER_EDGE upstream) → EdgeA 로컬 브로커 → EdgeA → Core 경로로 전달된다.
+    source.id 가 EdgeC ID 인지 확인하여 이중 래핑 방지 로직도 검증한다.
     """
-    spy.subscribe("campus/data/#")
+    spy.subscribe("campus/data/motion/B1/CAM-PEER")
     time.sleep(0.3)
 
     pub = make_publisher(host=MQTT_HOST, port=LOCAL_PORT_C)
@@ -155,19 +158,35 @@ def test_edge_c_event_reaches_core(active_core, edge_a, edge_c, spy):
     pub.loop_stop()
     pub.disconnect()
 
-    assert spy.wait_for("campus/data/#", timeout=15.0), \
+    # 특정 토픽이 Core에 도달했는지 확인 (다른 이벤트와 혼동 방지)
+    assert spy.wait_for("campus/data/motion/B1/CAM-PEER", timeout=15.0), \
         "EdgeC 이벤트가 Core 브로커에 도달하지 않았습니다"
+
+    # source.id == route.original_node 이어야 함 (이중 래핑 없음 검증)
+    # 이중 래핑 시: source.id=EdgeA_uuid, original_node=EdgeC_uuid → 불일치
+    # 정상 시:     source.id=EdgeC_uuid, original_node=EdgeC_uuid → 일치
+    arrived = spy.wait_payload(
+        "campus/data/motion/B1/CAM-PEER",
+        lambda p: (p.get("source", {}).get("id", "") != ""
+                   and p.get("source", {}).get("id") == p.get("route", {}).get("original_node")),
+        timeout=5.0,
+    )
+    assert arrived is not None, \
+        "Core 도달 이벤트의 source.id 와 route.original_node 가 다릅니다 (이중 래핑 의심)"
 
 
 # ── TC-04: RTT 이후 EdgeA가 EdgeC에 peer 연결 시도 ───────────────────────────
 def test_dynamic_peer_connection_after_rtt(active_core, edge_a, edge_c):
     """
     EdgeA가 Core로부터 CT를 받아 EdgeC의 정보를 확인한 뒤
-    Ping/Pong RTT 계산 완료 후 EdgeC에 동적 peer 연결을 시도한다.
+    Ping/Pong RTT 계산 완료 후 EdgeC에 동적 peer 연결을 시도하고 성공한다.
     """
     _, log_a = edge_a
     assert wait_log(log_a, r"initiating peer connection to", timeout=20.0), \
         "EdgeA가 EdgeC에 peer 연결을 시도하지 않았습니다"
+    # 연결 시도만이 아니라 실제 연결 성공까지 확인
+    assert wait_log(log_a, r"connected to peer edge", timeout=10.0), \
+        "EdgeA가 EdgeC에 peer 연결을 맺지 못했습니다"
 
 
 # ── TC-05: EdgeA 로컬 브로커 중단 시 EdgeC store-and-forward ─────────────────
@@ -188,7 +207,7 @@ def test_store_and_forward_when_peer_down(active_core, edge_a, edge_c, local_bro
     assert wait_log(log_c, r"CT applied", timeout=15.0), \
         "사전 조건: EdgeC가 CT를 수신하지 못했습니다"
 
-    spy.subscribe("campus/data/#")
+    spy.subscribe("campus/data/motion/B1/CAM-QUEUED")
 
     # EdgeA 로컬 브로커 종료 → EdgeC PEER_EDGE upstream TCP 연결 단절
     broker_a_proc.terminate()
@@ -220,7 +239,7 @@ def test_store_and_forward_when_peer_down(active_core, edge_a, edge_c, local_bro
     try:
         assert wait_log(log_c, r"connected to peer edge", timeout=15.0), \
             "EdgeC가 로컬 브로커 재기동 후 재연결하지 못했습니다"
-        assert spy.wait_for("campus/data/#", timeout=15.0), \
+        assert spy.wait_for("campus/data/motion/B1/CAM-QUEUED", timeout=15.0), \
             "재연결 후 큐잉된 이벤트가 Core에 도달하지 않았습니다"
     finally:
         new_broker.terminate()
