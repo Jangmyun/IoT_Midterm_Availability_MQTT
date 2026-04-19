@@ -25,6 +25,8 @@ export default function App() {
     events,
     activeBrokerUrl,
     queueSize,
+    ctReceived,
+    onFallback,
     connect,
     disconnect,
     publish,
@@ -82,12 +84,12 @@ export default function App() {
         <section className="card">
           <h2 className="card__title">연결 설정</h2>
           <div className="field-row">
-            <label className="field-label">Broker WebSocket URL(s)</label>
+            <label className="field-label">Broker WebSocket URL (Edge 주소)</label>
             <input
               className="field-input"
               value={urlInput}
               onChange={e => setUrlInput(e.target.value)}
-              placeholder="ws://192.168.0.9:9001, ws://192.168.0.16:9001, ws://192.168.0.7:9001"
+              placeholder="ws://192.168.0.9:9001"
               disabled={isConnected}
             />
           </div>
@@ -115,6 +117,16 @@ export default function App() {
           <div className="field-row field-row--hint">
             <span className="hint">
               Active broker: {activeBrokerUrl || '—'}
+              {onFallback && <span className="failover-badge"> · Failover 중</span>}
+            </span>
+          </div>
+          <div className="field-row field-row--hint">
+            <span className="hint">
+              CT: {isConnected
+                ? (ctReceived
+                    ? <span className="ct-ok">수신됨 ✓</span>
+                    : <span className="ct-waiting">대기 중…</span>)
+                : '—'}
             </span>
           </div>
           <div className="field-row field-row--hint">

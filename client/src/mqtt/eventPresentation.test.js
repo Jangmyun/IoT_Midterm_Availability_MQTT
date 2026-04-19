@@ -19,8 +19,12 @@ test('parseNestedPublisherMessage extracts publisher metadata from nested JSON p
   });
 
   assert.deepEqual(parseNestedPublisherMessage(raw), {
-    publisherId: PUBLISHER_ID,
-    description: 'Camera auto-detect',
+    publisherId:    PUBLISHER_ID,
+    description:    'Camera auto-detect',
+    viaFailover:    false,
+    intendedEdgeIp: '',
+    wasQueued:      false,
+    createdAt:      '',
   });
 });
 
@@ -59,6 +63,11 @@ test('getEventPresentation resolves source edge and readable location details', 
     sourceAlias: 'Engineering Hall',
     locationLabel: 'building-a / cam-01',
     descriptionLabel: 'Manual trigger',
+    publisherId: PUBLISHER_ID,
+    viaFailover:      false,
+    intendedEdgeLabel: '',
+    wasQueued:        false,
+    queueDelayMs:     0,
   });
 });
 
@@ -77,4 +86,65 @@ test('formatClockTime formats client-side timestamps', () => {
 test('formatDelayLabel renders readable delayed-delivery text', () => {
   assert.equal(formatDelayLabel(2500), '3s late');
   assert.equal(formatDelayLabel(65000), '1m 5s late');
+});
+
+const INTENDED_EDGE_ID = '77777777-aaaa-4bbb-8ccc-000000000001';
+const INTENDED_IP = '192.168.0.8';
+
+test('getEventPresentation resolves intendedEdgeLabel from via_failover metadata', () => {
+  const nodeById = new Map([
+    [EDGE_ID,         { id: EDGE_ID,         ip: '192.168.0.9', port: 1883 }],
+    [INTENDED_EDGE_ID,{ id: INTENDED_EDGE_ID, ip: INTENDED_IP,  port: 1883 }],
+  ]);
+  const nodeDisplayMap = new Map([
+    [EDGE_ID,         { edgeLabel: 'EDGE 2', listLabel: 'EDGE 2', alias: '' }],
+    [INTENDED_EDGE_ID,{ edgeLabel: 'EDGE 1', listLabel: 'EDGE 1', alias: '' }],
+  ]);
+
+  const event = {
+    timestamp: '2026-04-18T14:04:52Z',
+    source: { id: EDGE_ID },
+    payload: {
+      building_id: 'b',
+      camera_id:   'c',
+      description: JSON.stringify({
+        source: { id: PUBLISHER_ID },
+        payload: { description: '' },
+        via_failover:     true,
+        intended_edge_ip: INTENDED_IP,
+      }),
+    },
+  };
+
+  const result = getEventPresentation(event, nodeById, nodeDisplayMap);
+  assert.equal(result.viaFailover, true);
+  assert.equal(result.intendedEdgeLabel, 'EDGE 1');
+});
+
+test('getEventPresentation calculates queueDelayMs when was_queued is true', () => {
+  const nodeById = new Map([
+    [EDGE_ID, { id: EDGE_ID, ip: '192.168.0.9', port: 1883 }],
+  ]);
+  const nodeDisplayMap = new Map([
+    [EDGE_ID, { edgeLabel: 'EDGE 1', listLabel: 'EDGE 1', alias: '' }],
+  ]);
+
+  const event = {
+    timestamp: '2026-04-18T14:05:02Z',
+    source: { id: EDGE_ID },
+    payload: {
+      building_id: 'b',
+      camera_id:   'c',
+      description: JSON.stringify({
+        source: { id: PUBLISHER_ID },
+        payload: { description: '' },
+        was_queued:  true,
+        created_at:  '2026-04-18T14:04:32Z',
+      }),
+    },
+  };
+
+  const result = getEventPresentation(event, nodeById, nodeDisplayMap);
+  assert.equal(result.wasQueued, true);
+  assert.equal(result.queueDelayMs, 30000);
 });

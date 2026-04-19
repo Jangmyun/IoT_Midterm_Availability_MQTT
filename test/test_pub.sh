@@ -45,10 +45,13 @@ Usage: ./test/test_pub.sh <case>
   edge_store_forward
   edge_stable_node_id
 
-[전체 실행]:
-  all_client      client/smoke + client/edge-cases 전체
-  all_core        core/ 전체 (바이너리 없으면 SKIP)
-  all_edge        edge/ 전체 (바이너리 없으면 SKIP)
+  [publisher] publisher failover 검증 (pytest 필요):
+    publisher_failover
+
+  [전체 실행]:
+    all_client      client/smoke + client/edge-cases 전체
+    all_core        core/ 전체 (바이너리 없으면 SKIP)
+    all_edge        edge/ 전체 (바이너리 없으면 SKIP)
   all             전체 (all_client + all_core + all_edge)
 
 [기타]:
@@ -94,6 +97,7 @@ edge/ct_active_core_change
 edge/rtt_relay
 edge/store_forward
 edge/stable_node_id
+publisher/failover
 EOF
 }
 
@@ -152,6 +156,11 @@ run_all_edge() {
   printf '[test] all_edge completed\n'
 }
 
+run_all_publisher() {
+  "$SCRIPT_DIR/publisher/01_failover.sh"
+  printf '[test] all_publisher completed\n'
+}
+
 case "${1:-help}" in
   # client/smoke
   topology)           exec "$SCRIPT_DIR/client/smoke/01_topology.sh" ;;
@@ -187,10 +196,13 @@ case "${1:-help}" in
   edge_rtt_relay)              exec "$SCRIPT_DIR/edge/05_rtt_relay.sh" ;;
   edge_store_forward)          exec "$SCRIPT_DIR/edge/06_store_and_forward.sh" ;;
   edge_stable_node_id)         exec "$SCRIPT_DIR/edge/07_stable_node_id.sh" ;;
+  # publisher
+  publisher_failover)          exec "$SCRIPT_DIR/publisher/01_failover.sh" ;;
   # 전체 실행
   all_client)         run_all_client ;;
   all_core)           run_all_core ;;
   all_edge)           run_all_edge ;;
+  all_publisher)      run_all_publisher ;;
   all)
     run_all_client
     run_all_core

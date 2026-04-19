@@ -49,11 +49,13 @@ export function buildMessage({ publisherId, type, buildingId, cameraId, descript
   if (!publisherId) throw new Error('publisherId required');
   if (!MSG_TYPES[type]) throw new Error(`unknown type: ${type}`);
 
+  const now = nowUtc();
   return {
-    msg_id:    generateUuid(),
+    msg_id:     generateUuid(),
     type,
-    timestamp: nowUtc(),
-    priority:  inferPriority(type),
+    timestamp:  now,
+    created_at: now,
+    priority:   inferPriority(type),
     source:    { role: 'NODE', id: publisherId },
     target:    { role: 'CORE', id: '' },
     route: {

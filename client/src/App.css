@@ -608,6 +608,14 @@ body {
   flex-wrap: wrap;
 }
 
+.publisher-id {
+  color: #818cf8;
+}
+
+.via-info {
+  color: #fb923c;
+}
+
 .event-meta span {
   display: inline-flex;
   align-items: center;
@@ -637,7 +645,9 @@ body {
 .badge--orange { background: #3a2a1a; color: #ff9800; }
 .badge--yellow { background: #2a2a1a; color: #ffc107; }
 .badge--purple { background: #1a1a3a; color: #a5b4fc; }
-.badge--gray   { background: #1e1e2e; color: #888;    }
+.badge--gray     { background: #1e1e2e; color: #888;    }
+.badge--failover { background: #3a1800; color: #f97316; }
+.badge--queued   { background: #0a2a20; color: #34d399; }
 
 /* ── 빈 상태 ─────────────────────────────────── */
 .empty {

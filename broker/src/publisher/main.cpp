@@ -63,6 +63,11 @@ struct PubContext {
     // failover 상태
     bool on_fallback;  // 현재 대체 브로커에 연결 중인지
 
+    // CT가 비어 있어도 마지막으로 본 core endpoint로 직접 붙을 수 있게 유지
+    char cached_core_ip[IP_LEN];
+    int  cached_core_port;
+    bool has_cached_core;
+
     // store-and-forward queue
     struct QueuedEvent {
         char topic[256];
@@ -170,7 +175,19 @@ static void attempt_failover(PubContext* ctx)
 {
     ConnectionTable ct = ctx->ct_manager.snapshot();
     if (ct.node_count == 0) {
-        printf("[pub_sim] no CT available, cannot failover\n");
+        if (!ctx->has_cached_core) {
+            printf("[pub_sim] no CT available, cannot failover\n");
+            return;
+        }
+
+        printf("[pub_sim] CT empty, reconnecting directly to cached core %s:%d\n",
+               ctx->cached_core_ip, ctx->cached_core_port);
+        std::strncpy(ctx->current_ip, ctx->cached_core_ip, IP_LEN - 1);
+        ctx->current_port = ctx->cached_core_port;
+        ctx->on_fallback = true;
+
+        mosquitto_disconnect(ctx->mosq);
+        mosquitto_connect_async(ctx->mosq, ctx->current_ip, ctx->current_port, 60);
         return;
     }
 
@@ -230,6 +247,17 @@ static void try_resolve_primary_edge_id(PubContext* ctx, const ConnectionTable& 
     }
 }
 
+static void remember_cached_core(PubContext* ctx, const ConnectionTable& ct)
+{
+    FallbackBroker core = select_preferred_core_broker(ct, ctx->primary_edge_id);
+    if (!core.found) return;
+
+    std::strncpy(ctx->cached_core_ip, core.ip, IP_LEN - 1);
+    ctx->cached_core_ip[IP_LEN - 1] = '\0';
+    ctx->cached_core_port = core.port;
+    ctx->has_cached_core = true;
+}
+
 // ── MQTT Callbacks ────────────────────────────────────────────────────────────
 
 static void on_connect(struct mosquitto* mosq, void* userdata, int rc)
@@ -285,21 +313,15 @@ static void on_message(struct mosquitto* /*mosq*/, void* userdata,
 
         if (ct.version <= ctx->last_ct_version) return;
 
-        // CT 적용
-        ctx->ct_manager.setActiveCoreId(ct.active_core_id);
-        ctx->ct_manager.setBackupCoreId(ct.backup_core_id);
-        for (int i = 0; i < ct.node_count; i++) {
-            if (!ctx->ct_manager.addNode(ct.nodes[i]))
-                ctx->ct_manager.updateNode(ct.nodes[i]);
-        }
-        for (int i = 0; i < ct.link_count; i++)
-            ctx->ct_manager.addLink(ct.links[i]);
+        // CT 전체 스냅샷 적용
+        ctx->ct_manager.replace(ct);
 
         ctx->last_ct_version = ct.version;
         printf("[pub_sim] CT applied (version=%d, nodes=%d)\n", ct.version, ct.node_count);
 
         // primary edge ID 해석 시도
         try_resolve_primary_edge_id(ctx, ct);
+        remember_cached_core(ctx, ct);
 
         // fallback 중이면 primary edge 복구 확인
         if (ctx->on_fallback) {
@@ -364,6 +386,7 @@ int main(int argc, char* argv[])
     ctx.last_ct_version = 0;
     ctx.connected = false;
     ctx.on_fallback = false;
+    ctx.has_cached_core = false;
     std::strncpy(ctx.primary_ip, cfg.broker_host, IP_LEN - 1);
     ctx.primary_port = cfg.broker_port;
     std::strncpy(ctx.current_ip, cfg.broker_host, IP_LEN - 1);

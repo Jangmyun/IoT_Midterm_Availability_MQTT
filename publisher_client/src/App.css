@@ -1,3 +1,9 @@
+/* ── CT / Failover 상태 표시 ──────────────────────────────────────────────── */
+
+.ct-ok      { color: #4ade80; font-weight: 600; }
+.ct-waiting { color: #fbbf24; }
+.failover-badge { color: #f97316; font-weight: 600; }
+
 /* ── Layout ───────────────────────────────────────────────────────────────── */
 
 .app {

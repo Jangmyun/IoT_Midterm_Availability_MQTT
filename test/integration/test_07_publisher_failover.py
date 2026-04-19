@@ -28,12 +28,24 @@ from conftest import (
     MQTT_PORT,
     MqttSpy,
     make_event,
+    make_publisher,
     run_proc,
     wait_log,
     _clear_retained,
 )
 
 PUB_SIM_BINARY = os.environ.get("PUB_SIM_BINARY", str(BUILD_DIR / "pub_sim"))
+
+
+def _empty_ct(version: int) -> dict:
+    return {
+        "version": version,
+        "last_update": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "active_core_id": "",
+        "backup_core_id": "",
+        "nodes": [],
+        "links": [],
+    }
 
 
 # ──────────────────────────────────────────────
@@ -98,6 +110,7 @@ def test_publisher_failover_to_core(active_core, edge, spy, tmp_path):
         # 2. 먼저 정상 이벤트 전달 확인
         assert spy.wait_for("campus/data/#", timeout=10.0, min_count=1), \
             "정상 상태에서 이벤트가 전달되지 않았습니다"
+        delivered_before_failover = spy.count("campus/data/#")
 
         # 3. Edge 강제 종료
         edge_proc.kill()
@@ -108,7 +121,11 @@ def test_publisher_failover_to_core(active_core, edge, spy, tmp_path):
         assert wait_log(pub_log, r"failover|reconnect|connected", timeout=20.0), \
             "Publisher가 failover를 시도하지 않았습니다"
 
-        # 5. Publisher 종료
+        # 5. failover 후에도 새 이벤트가 계속 들어와야 한다.
+        assert spy.wait_for("campus/data/#", timeout=15.0, min_count=delivered_before_failover + 1), \
+            "Publisher가 failover 후 Core를 통해 이벤트를 계속 전달하지 못했습니다"
+
+        # 6. Publisher 종료
         pub_proc.terminate()
         try:
             pub_proc.wait(timeout=5)
@@ -200,6 +217,67 @@ def test_publisher_detects_edge_lwt(active_core, edge, tmp_path):
         # Publisher가 LWT 수신 확인
         assert wait_log(pub_log, r"edge down detected", timeout=20.0), \
             "Publisher가 Edge LWT를 수신하지 못했습니다"
+
+        pub_proc.terminate()
+        try:
+            pub_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pub_proc.kill()
+            pub_proc.wait()
+
+
+# ──────────────────────────────────────────────
+# TC-05: 빈 CT 수신 후 Edge 장애 → 마지막으로 본 Core에 직접 재연결
+# ──────────────────────────────────────────────
+def test_publisher_falls_back_to_cached_core_when_ct_empty(active_core, edge, spy, tmp_path):
+    """
+    Publisher가 한 번이라도 유효한 CT를 받아 active core endpoint를 기억한 뒤,
+    이후 빈 CT(nodes=0)를 받으면 Edge 장애 시 cached core로 직접 연결해야 한다.
+    """
+    spy.subscribe("campus/data/#")
+    edge_proc, edge_log = edge
+    pub_log = tmp_path / "pub_cached_core.log"
+
+    with run_proc(
+        PUB_SIM_BINARY,
+        "--host", MQTT_HOST,
+        "--port", str(MQTT_PORT),
+        "--count", "0",
+        "--rate", "2",
+        "--verbose",
+        startup_log_pattern=r"\[pub_sim\] 브로커",
+        startup_timeout=10.0,
+        log_path=pub_log,
+    ) as pub_proc:
+        assert wait_log(pub_log, r"CT applied", timeout=15.0), \
+            "Publisher가 초기 Connection Table을 수신하지 못했습니다"
+        assert spy.wait_for("campus/data/#", timeout=10.0, min_count=1), \
+            "초기 상태에서 이벤트가 전달되지 않았습니다"
+
+        publisher = make_publisher()
+        try:
+            publisher.publish(
+                "campus/monitor/topology",
+                json.dumps(_empty_ct(999)),
+                qos=1,
+                retain=True,
+            )
+            time.sleep(1.0)
+        finally:
+            publisher.loop_stop()
+            publisher.disconnect()
+
+        assert wait_log(pub_log, r"CT applied \(version=999, nodes=0\)", timeout=10.0), \
+            "Publisher가 빈 CT를 적용하지 않았습니다"
+
+        delivered_before_failover = spy.count("campus/data/#")
+        edge_proc.kill()
+        edge_proc.wait(timeout=3)
+
+        assert wait_log(pub_log, r"CT empty, reconnecting directly to cached core", timeout=20.0), \
+            "Publisher가 빈 CT 상태에서 cached core로 직접 재연결하지 않았습니다"
+        assert spy.wait_for("campus/data/#", timeout=15.0, min_count=delivered_before_failover + 1), \
+            "Publisher가 cached core를 통해 이벤트 전달을 이어가지 못했습니다"
 
         pub_proc.terminate()
         try:

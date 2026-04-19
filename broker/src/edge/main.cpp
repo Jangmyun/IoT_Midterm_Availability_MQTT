@@ -39,6 +39,7 @@ struct EdgeContext
     // upstream publish를 위해 보관
     struct mosquitto* mosq_core;
     struct mosquitto* mosq_backup;
+    struct mosquitto* mosq_local;  // CT 로컬 재발행용
 
     bool core_connected;
     bool backup_connected;
@@ -497,17 +498,17 @@ static void on_message_core(struct mosquitto* mosq, void* userdata,
                 }
             }
 
-            ctx->ct_manager->setBackupCoreId(ct.backup_core_id);
-
-            for (int i = 0; i < ct.node_count; i++)
-            {
-                if (!ctx->ct_manager->addNode(ct.nodes[i]))
-                    ctx->ct_manager->updateNode(ct.nodes[i]);
-            }
-            for (int i = 0; i < ct.link_count; i++)
-                ctx->ct_manager->addLink(ct.links[i]);
+            ctx->ct_manager->replace(ct);
             ctx->last_ct_version = ct.version;
             std::printf("[edge] CT applied (version=%d, nodes=%d)\n", ct.version, ct.node_count);
+
+            // publisher_client가 Edge WebSocket에서 CT를 받을 수 있도록 로컬 재발행
+            if (ctx->mosq_local) {
+                std::string ct_raw(static_cast<char*>(msg->payload), msg->payloadlen);
+                mosquitto_publish(ctx->mosq_local, nullptr, TOPIC_TOPOLOGY,
+                    (int)ct_raw.size(), ct_raw.c_str(), 1, true);
+            }
+
             send_pings_to_nodes(ctx);  // RTT 측정 시작 (FR-08)
         }
         return;
@@ -861,6 +862,7 @@ int main(int argc, char* argv[])
         mosquitto_lib_cleanup();
         return 1;
     }
+    ctx.mosq_local = mosq_local;
 
     // 6-2. backup core 연결용 클라이언트 생성
     struct mosquitto* mosq_backup = nullptr;

@@ -7,6 +7,7 @@ import {
   formatEventSourceOption,
   formatEventTime,
   getEventPresentation,
+  shortId,
 } from './mqtt/eventPresentation.js';
 import { buildNodePresentationMap, getNodeAliasKey, resolveNodeAlias } from './mqtt/nodePresentation.js';
 import './App.css';
@@ -511,6 +512,8 @@ export default function App() {
                       <span className={`badge ${EVENT_TYPE_COLOR[e.type] ?? 'badge--gray'}`}>{e.type}</span>
                       {e.priority === 'HIGH' && <span className="badge badge--red">HIGH</span>}
                       {e._buffered && <span className="badge badge--purple">BUFFERED</span>}
+                      {eventView.viaFailover && <span className="badge badge--failover">FAILOVER</span>}
+                      {eventView.wasQueued && <span className="badge badge--queued">QUEUED</span>}
                       <span className="event-source-chip">
                         {eventView.edgeLabel}
                       </span>
@@ -523,8 +526,17 @@ export default function App() {
 
                     <div className="event-meta">
                       {eventView.sourceEndpoint && <span>{eventView.sourceEndpoint}</span>}
+                      {eventView.publisherId && (
+                        <span className="publisher-id">pub:{shortId(eventView.publisherId)}</span>
+                      )}
                       {e._buffered && <span>received {formatClockTime(e._receivedAt)}</span>}
                       {e._buffered && <span>{formatDelayLabel(e._delayMs)}</span>}
+                      {eventView.viaFailover && eventView.intendedEdgeLabel && (
+                        <span className="via-info">→ {eventView.intendedEdgeLabel} 대신 우회</span>
+                      )}
+                      {eventView.wasQueued && eventView.queueDelayMs > 1000 && (
+                        <span>{formatDelayLabel(eventView.queueDelayMs)} 지연 도착</span>
+                      )}
                       {eventView.descriptionLabel && <span>{eventView.descriptionLabel}</span>}
                     </div>
                   </button>

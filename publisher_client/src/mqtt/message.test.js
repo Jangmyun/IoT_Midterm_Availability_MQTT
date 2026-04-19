@@ -101,6 +101,12 @@ test('buildMessage — 알 수 없는 type이면 throw', () => {
   );
 });
 
+test('buildMessage — created_at는 ISO 8601 UTC 형식이며 timestamp와 동일', () => {
+  const msg = buildMessage({ publisherId: PUB_ID, type: 'MOTION', buildingId: 'b', cameraId: 'c' });
+  assert.match(msg.created_at, TS_RE);
+  assert.equal(msg.created_at, msg.timestamp);
+});
+
 test('buildMessage — msg_id는 호출마다 다른 UUID', () => {
   const a = buildMessage({ publisherId: PUB_ID, type: 'MOTION', buildingId: 'b', cameraId: 'c' });
   const b = buildMessage({ publisherId: PUB_ID, type: 'MOTION', buildingId: 'b', cameraId: 'c' });

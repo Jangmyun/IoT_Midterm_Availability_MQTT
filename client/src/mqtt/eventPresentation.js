@@ -70,8 +70,12 @@ export function parseNestedPublisherMessage(rawDescription) {
   if (!parsed || typeof parsed !== 'object') return null;
 
   return {
-    publisherId: typeof parsed.source?.id === 'string' ? parsed.source.id : '',
-    description: normalizeDescription(parsed.payload?.description),
+    publisherId:    typeof parsed.source?.id === 'string' ? parsed.source.id : '',
+    description:    normalizeDescription(parsed.payload?.description),
+    viaFailover:    parsed.via_failover ?? false,
+    intendedEdgeIp: typeof parsed.intended_edge_ip === 'string' ? parsed.intended_edge_ip : '',
+    wasQueued:      parsed.was_queued ?? false,
+    createdAt:      typeof parsed.created_at === 'string' ? parsed.created_at : '',
   };
 }
 
@@ -96,6 +100,20 @@ export function getEventPresentation(event, nodeById, nodeDisplayMap) {
   const sourceIp = sourceNode?.ip ?? '';
   const sourcePort = sourceNode?.port ? String(sourceNode.port) : '';
 
+  let intendedEdgeLabel = '';
+  if (nested?.viaFailover && nested?.intendedEdgeIp) {
+    const intendedNode = [...(nodeById?.values() ?? [])].find(n => n.ip === nested.intendedEdgeIp);
+    const intendedDisplay = intendedNode ? nodeDisplayMap?.get(intendedNode.id) : null;
+    intendedEdgeLabel = intendedDisplay?.edgeLabel ?? nested.intendedEdgeIp;
+  }
+
+  let queueDelayMs = 0;
+  if (nested?.wasQueued && nested?.createdAt && event?.timestamp) {
+    queueDelayMs = Math.max(0,
+      new Date(event.timestamp).getTime() - new Date(nested.createdAt).getTime()
+    );
+  }
+
   return {
     sourceId,
     sourceIp,
@@ -106,5 +124,10 @@ export function getEventPresentation(event, nodeById, nodeDisplayMap) {
     sourceAlias: sourceDisplay?.alias ?? '',
     locationLabel,
     descriptionLabel: nested?.description ?? normalizeDescription(event?.payload?.description),
+    publisherId: nested?.publisherId ?? '',
+    viaFailover: nested?.viaFailover ?? false,
+    intendedEdgeLabel,
+    wasQueued: nested?.wasQueued ?? false,
+    queueDelayMs,
   };
 }
