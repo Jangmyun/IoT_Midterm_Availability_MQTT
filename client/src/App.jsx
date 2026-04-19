@@ -9,6 +9,7 @@ import {
   getEventPresentation,
   shortId,
 } from './mqtt/eventPresentation.js';
+import { buildEventPresentationSnapshots } from './mqtt/eventSnapshot.js';
 import {
   buildAutoNodeAliases,
   buildNodePresentationMap,
@@ -142,6 +143,7 @@ export default function App() {
   const autoNodeAliases = buildAutoNodeAliases(topology, events);
   const effectiveNodeAliases = { ...autoNodeAliases, ...nodeAliases };
   const nodeDisplayMap = buildNodePresentationMap(topology, effectiveNodeAliases);
+  const eventSnapshotsRef = useRef(new Map());
   const selectedNodeDisplay = selectedNode ? nodeDisplayMap.get(selectedNode.id) ?? null : null;
   const edgeNodes = (topology?.nodes ?? [])
     .filter(node => node.role !== 'CORE')
@@ -160,7 +162,13 @@ export default function App() {
 
   // 필터 옵션 (수신된 events에서 동적 추출)
   const nodeById = new Map((topology?.nodes ?? []).map(node => [node.id, node]));
-  const eventViews = new Map(events.map(event => [event.msg_id, getEventPresentation(event, nodeById, nodeDisplayMap)]));
+  const eventViews = buildEventPresentationSnapshots(
+    events,
+    eventSnapshotsRef.current,
+    nodeById,
+    nodeDisplayMap,
+  );
+  eventSnapshotsRef.current = eventViews;
   const eventTypes = ['ALL', ...new Set(events.map(e => e.type).filter(Boolean))];
   const buildings  = ['ALL', ...new Set(events.map(e => e.payload?.building_id).filter(Boolean))];
   const sourceNodes = ['ALL', ...new Set(
