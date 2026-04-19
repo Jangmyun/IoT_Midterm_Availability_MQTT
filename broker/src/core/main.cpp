@@ -478,6 +478,7 @@ static void on_message(struct mosquitto* mosq, void* userdata,
                 promote_core_after_failover(*ctx->ct_manager, ctx->core_id, snapshot.active_core_id);
                 // is_backup 플래그를 먼저 내려야 on_ct_changed 가 active 경로(publish_ct_sync)로 분기한다.
                 ctx->is_backup = false;
+                mosquitto_subscribe(ctx->mosq_self, nullptr, TOPIC_NODE_REGISTER, 1);
                 on_ct_changed(mosq, ctx);
 
                 // core_switch 발행 → Edge들이 수신하여 새 Active Core로 전환
@@ -587,6 +588,7 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
 
         promote_core_after_failover(*ctx->ct_manager, ctx->core_id, failed_core_id);
         ctx->is_backup = false;
+        mosquitto_subscribe(ctx->mosq_self, nullptr, TOPIC_NODE_REGISTER, 1);
 
         publish_active_view(ctx->mosq_self, ctx);
         if (mosq != ctx->mosq_self) {
@@ -664,6 +666,7 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
                 ConnectionTable snapshot = ctx->ct_manager->snapshot();
                 promote_core_after_failover(*ctx->ct_manager, ctx->core_id, snapshot.active_core_id);
                 ctx->is_backup = false;
+                mosquitto_subscribe(ctx->mosq_self, nullptr, TOPIC_NODE_REGISTER, 1);
                 // 자신 브로커 topology 갱신
                 publish_active_view(ctx->mosq_self, ctx);
                 if (mosq != ctx->mosq_self) {
