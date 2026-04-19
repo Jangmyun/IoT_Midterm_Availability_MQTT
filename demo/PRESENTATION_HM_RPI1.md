@@ -85,6 +85,37 @@ Backup Core 브로커 구독:
 bash demo/presentation-hm-rpi1.sh backup-sub
 ```
 
+## Failover 후 재진입
+
+Active Core 종료 후 Backup이 승격된 상태에서, 원래 Active를 Backup으로 재진입시키려면 `rejoin-as-backup` 을 사용한다.
+
+> `backup-core` 를 쓰면 peer 주소가 자기 자신(192.168.0.7)으로 잘못 설정된다.
+
+혁민 Mac (`192.168.0.7`) 이 재진입할 때:
+
+```bash
+bash demo/presentation-hm-rpi1.sh rejoin-as-backup
+# = core_broker 192.168.0.7 1883  192.168.0.8 1883
+# (새 Active = 라즈베리 1 에 peer 연결)
+```
+
+라즈베리 1 (`192.168.0.8`) 이 재진입할 때 (역할 역전 후):
+
+```bash
+bash demo/presentation-hm-rpi1.sh backup-core
+# = core_broker 192.168.0.8 1883  192.168.0.7 1883
+# (새 Active = 혁민 Mac 에 peer 연결)
+```
+
+### 순환 커맨드 대응표
+
+| 종료된 머신 | 재진입 커맨드 | peer 대상 |
+|------------|-------------|----------|
+| 혁민 Mac (192.168.0.7) | `rejoin-as-backup` | 라즈베리 1 (192.168.0.8) |
+| 라즈베리 1 (192.168.0.8) | `backup-core` | 혁민 Mac (192.168.0.7) |
+
+역할이 몇 번 뒤집혀도 각 장비는 자신의 커맨드를 그대로 사용하면 된다.
+
 ## 추천 시연 순서
 
 1. Mac에서 `mosquitto` 실행
