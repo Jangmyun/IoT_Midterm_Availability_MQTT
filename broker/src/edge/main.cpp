@@ -62,6 +62,7 @@ struct EdgeContext
     std::mutex flush_mutex;
 
     int last_ct_version = 0;
+    std::mutex ct_mutex;  // version check + replace 원자성 보장
 
     // 현재 연결 중인 Active Core 주소
     char active_core_ip[IP_LEN];
@@ -662,6 +663,7 @@ static void handle_topology_message(struct mosquitto* /*mosq*/, void* userdata,
     if (!connection_table_from_json(json, ct))
         return;
 
+    // 빠른 중복 검사 (lock 없이)
     if (ct.version <= ctx->last_ct_version)
     {
         std::printf("[edge] skip stale CT (remote=%d <= local=%d)\n",
@@ -669,7 +671,7 @@ static void handle_topology_message(struct mosquitto* /*mosq*/, void* userdata,
         return;
     }
 
-    // active_core_id 변경 감지 → CORE 슬롯이 있는 경우 재연결
+    // active_core_id 변경 감지 → CORE 슬롯이 있는 경우 재연결 (MQTT op 포함, lock 밖에서 수행)
     if (ct.active_core_id[0] != '\0')
     {
         std::string prev_active = ctx->ct_manager->snapshot().active_core_id;
@@ -705,24 +707,36 @@ static void handle_topology_message(struct mosquitto* /*mosq*/, void* userdata,
         }
     }
 
-    // 구조 변화 여부 판단: 새로운 ONLINE 노드가 생겼거나 OFFLINE→ONLINE 전환이 있으면 ping 필요
-    ConnectionTable prev_ct = ctx->ct_manager->snapshot();
-    bool structural_change = false;
-    for (int i = 0; i < ct.node_count; i++) {
-        if (ct.nodes[i].status != NODE_STATUS_ONLINE) continue;
-        bool found_online = false;
-        for (int j = 0; j < prev_ct.node_count; j++) {
-            if (std::strncmp(ct.nodes[i].id, prev_ct.nodes[j].id, UUID_LEN) == 0 &&
-                prev_ct.nodes[j].status == NODE_STATUS_ONLINE) {
-                found_online = true;
-                break;
+    // ct_mutex: version 재확인 + structural_change 판단 + replace 를 원자적으로 수행
+    // (Core/Backup 양쪽에서 동시에 같은 버전의 CT가 도착하는 race 방지)
+    bool do_structural_ping = false;
+    {
+        std::lock_guard<std::mutex> lock(ctx->ct_mutex);
+
+        // race 후 재확인: 이미 다른 스레드가 같은 버전을 적용했으면 skip
+        if (ct.version <= ctx->last_ct_version)
+            return;
+
+        // 구조 변화 여부 판단: 새로운 ONLINE 노드(자신 제외)가 생겼으면 ping 필요
+        ConnectionTable prev_ct = ctx->ct_manager->snapshot();
+        for (int i = 0; i < ct.node_count; i++) {
+            if (ct.nodes[i].status != NODE_STATUS_ONLINE) continue;
+            if (std::strncmp(ct.nodes[i].id, ctx->edge_id, UUID_LEN) == 0) continue;  // 자신 제외
+            bool found_online = false;
+            for (int j = 0; j < prev_ct.node_count; j++) {
+                if (std::strncmp(ct.nodes[i].id, prev_ct.nodes[j].id, UUID_LEN) == 0 &&
+                    prev_ct.nodes[j].status == NODE_STATUS_ONLINE) {
+                    found_online = true;
+                    break;
+                }
             }
+            if (!found_online) { do_structural_ping = true; break; }
         }
-        if (!found_online) { structural_change = true; break; }
+
+        ctx->ct_manager->replace(ct);
+        ctx->last_ct_version = ct.version;
     }
 
-    ctx->ct_manager->replace(ct);
-    ctx->last_ct_version = ct.version;
     std::printf("[edge] CT applied (version=%d, nodes=%d)\n", ct.version, ct.node_count);
 
     // publisher_client 가 CT를 받을 수 있도록 로컬 재발행
@@ -733,7 +747,7 @@ static void handle_topology_message(struct mosquitto* /*mosq*/, void* userdata,
     }
 
     // 새 ONLINE 노드가 있을 때만 ping (RTT-only 변경 시 반복 ping 방지)
-    if (structural_change) {
+    if (do_structural_ping) {
         send_pings_to_nodes(ctx);
     }
 }
