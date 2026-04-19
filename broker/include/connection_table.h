@@ -24,6 +24,8 @@ typedef struct {
     char       ip[IP_LEN];
     uint16_t   port;
     NodeStatus status;
+    NodeStatus previous_status;
+    char       status_changed_at[TIMESTAMP_LEN];
     int        hop_to_core;
 } NodeEntry;
 

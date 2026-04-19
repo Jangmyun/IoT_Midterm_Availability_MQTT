@@ -28,11 +28,18 @@ inline void make_alert_topic(const char* prefix, const char* id, char* buf, size
 // - Links: upsert via addLink (rtt updated if exists)
 // Returns true if local CT was modified.
 inline bool same_node_entry(const NodeEntry& left, const NodeEntry& right) {
+    const bool compare_transition_meta =
+        left.status_changed_at[0] != '\0' &&
+        right.status_changed_at[0] != '\0';
+
     return std::strncmp(left.id, right.id, UUID_LEN) == 0 &&
            left.role == right.role &&
            std::strncmp(left.ip, right.ip, IP_LEN) == 0 &&
            left.port == right.port &&
            left.status == right.status &&
+           (!compare_transition_meta || left.previous_status == right.previous_status) &&
+           (!compare_transition_meta ||
+               std::strncmp(left.status_changed_at, right.status_changed_at, TIMESTAMP_LEN) == 0) &&
            left.hop_to_core == right.hop_to_core;
 }
 

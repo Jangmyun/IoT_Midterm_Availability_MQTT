@@ -45,6 +45,34 @@ test('parseConnectionTable preserves active and backup core ids', () => {
   assert.equal(parsed.links.length, 1);
 });
 
+test('parseConnectionTable preserves node transition metadata when present', () => {
+  const raw = JSON.stringify({
+    version: 9,
+    last_update: '2026-04-19T06:30:00Z',
+    active_core_id: 'aaaaaaaa-1111-2222-3333-444444444444',
+    backup_core_id: '',
+    nodes: [
+      {
+        id: 'dddddddd-1111-2222-3333-777777777777',
+        role: 'NODE',
+        ip: '192.168.0.18',
+        port: 1883,
+        status: 'ONLINE',
+        previous_status: 'OFFLINE',
+        status_changed_at: '2026-04-19T06:29:58Z',
+        hop_to_core: 1,
+      },
+    ],
+    links: [],
+  });
+
+  const parsed = parseConnectionTable(raw);
+
+  assert.ok(parsed);
+  assert.equal(parsed.nodes[0].previous_status, 'OFFLINE');
+  assert.equal(parsed.nodes[0].status_changed_at, '2026-04-19T06:29:58Z');
+});
+
 test('parseConnectionTable accepts empty backup core id after promotion', () => {
   const raw = JSON.stringify({
     version: 8,

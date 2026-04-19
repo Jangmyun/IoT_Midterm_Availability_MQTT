@@ -6,6 +6,7 @@ import {
   buildTopologyNodePositions,
   classifyTopologyLink,
   classifyTopologyNode,
+  classifyTopologyNodeAt,
   formatTopologyLinkRtt,
 } from './topologyGraphModel.js';
 
@@ -114,6 +115,67 @@ test('buildTopologyNodePositions keeps active and backup cores together on the t
     Object.values(positions).map((position) => Math.round(position.x / 10)),
   );
   assert.ok(distinctColumns.size >= 3);
+});
+
+test('buildTopologyNodePositions keeps each core on a stable side across failover', () => {
+  const before = {
+    active_core_id: ACTIVE_CORE,
+    backup_core_id: BACKUP_CORE,
+    nodes: [
+      { id: ACTIVE_CORE, role: 'CORE', status: 'ONLINE', ip: '192.168.0.7', port: 1883 },
+      { id: BACKUP_CORE, role: 'CORE', status: 'ONLINE', ip: '192.168.0.8', port: 1883 },
+    ],
+    links: [],
+  };
+  const after = {
+    active_core_id: BACKUP_CORE,
+    backup_core_id: '',
+    nodes: [
+      { id: ACTIVE_CORE, role: 'CORE', status: 'OFFLINE', ip: '192.168.0.7', port: 1883 },
+      { id: BACKUP_CORE, role: 'CORE', status: 'ONLINE', ip: '192.168.0.8', port: 1883 },
+    ],
+    links: [],
+  };
+
+  const beforePositions = buildTopologyNodePositions(before, before.nodes);
+  const afterPositions = buildTopologyNodePositions(after, after.nodes);
+
+  assert.equal(beforePositions[ACTIVE_CORE].x, afterPositions[ACTIVE_CORE].x);
+  assert.equal(beforePositions[BACKUP_CORE].x, afterPositions[BACKUP_CORE].x);
+});
+
+test('classifyTopologyNodeAt marks recently recovered edges distinctly', () => {
+  const topology = makeTopology();
+  const now = Date.parse('2026-04-19T06:30:05Z');
+
+  assert.equal(
+    classifyTopologyNodeAt(
+      topology,
+      {
+        id: EDGE_A,
+        role: 'NODE',
+        status: 'ONLINE',
+        previous_status: 'OFFLINE',
+        status_changed_at: '2026-04-19T06:29:58Z',
+      },
+      now,
+    ),
+    'recovered-node',
+  );
+  assert.equal(
+    classifyTopologyNodeAt(
+      topology,
+      {
+        id: EDGE_B,
+        role: 'NODE',
+        status: 'ONLINE',
+        previous_status: 'OFFLINE',
+        status_changed_at: '2026-04-19T06:29:30Z',
+      },
+      now,
+    ),
+    'node',
+  );
 });
 
 test('formatTopologyLinkRtt renders readable millisecond labels', () => {

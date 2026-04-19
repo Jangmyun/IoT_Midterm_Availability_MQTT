@@ -58,6 +58,8 @@ static NodeEntry make_node(const char* id, NodeRole role, const char* ip,
     std::strncpy(n.ip, ip, IP_LEN - 1);
     n.port       = port;
     n.status     = status;
+    n.previous_status = status;
+    std::strncpy(n.status_changed_at, "2026-04-13T12:00:00Z", TIMESTAMP_LEN - 1);
     n.hop_to_core = hop;
     return n;
 }
@@ -114,6 +116,8 @@ static void test_ct_roundtrip() {
     CHECK_STREQ(parsed.nodes[0].ip, "127.0.0.1");
     CHECK_EQ(parsed.nodes[0].port,  1883);
     CHECK_EQ(parsed.nodes[0].status, NODE_STATUS_ONLINE);
+    CHECK_EQ(parsed.nodes[0].previous_status, NODE_STATUS_ONLINE);
+    CHECK_STREQ(parsed.nodes[0].status_changed_at, "2026-04-13T12:00:00Z");
     CHECK_EQ(parsed.nodes[0].hop_to_core, 0);
 
     // nodes[1]: CORE_B
@@ -189,11 +193,15 @@ static void test_ct_offline_node() {
     std::strncpy(ct.active_core_id, CORE_A, UUID_LEN - 1);
     std::strncpy(ct.backup_core_id, CORE_B, UUID_LEN - 1);
     ct.nodes[ct.node_count++] = make_node(NODE_1, NODE_ROLE_NODE, "10.0.0.3", 1883, NODE_STATUS_OFFLINE, 2);
+    ct.nodes[0].previous_status = NODE_STATUS_ONLINE;
+    std::strncpy(ct.nodes[0].status_changed_at, "2026-04-14T08:59:58Z", TIMESTAMP_LEN - 1);
 
     std::string     json   = connection_table_to_json(ct);
     ConnectionTable parsed = {};
     CHECK_TRUE(connection_table_from_json(json, parsed));
     CHECK_EQ(parsed.nodes[0].status, NODE_STATUS_OFFLINE);
+    CHECK_EQ(parsed.nodes[0].previous_status, NODE_STATUS_ONLINE);
+    CHECK_STREQ(parsed.nodes[0].status_changed_at, "2026-04-14T08:59:58Z");
     CHECK_EQ(parsed.version, 3);
 
     end_test(name);

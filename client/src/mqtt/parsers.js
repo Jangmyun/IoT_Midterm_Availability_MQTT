@@ -28,6 +28,10 @@ export function parseConnectionTable(raw) {
         ip:          n.ip,
         port:        n.port,
         status:      n.status,      // "ONLINE" | "OFFLINE"
+        previous_status: typeof n.previous_status === 'string' ? n.previous_status : n.status,
+        status_changed_at: typeof n.status_changed_at === 'string'
+          ? n.status_changed_at
+          : j.last_update,
         hop_to_core: n.hop_to_core,
       })),
       links: j.links.map(l => ({

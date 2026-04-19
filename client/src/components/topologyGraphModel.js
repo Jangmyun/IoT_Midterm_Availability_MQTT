@@ -4,6 +4,8 @@ const CORE_GAP_X = 160;
 const EXTRA_CORE_GAP_X = 140;
 const EDGE_CENTER_Y_OFFSET = 40;
 
+import { isRecentlyRecoveredNode } from '../mqtt/nodeTransitions.js';
+
 function buildRoleMap(nodes) {
   return new Map(
     (Array.isArray(nodes) ? nodes : [])
@@ -54,6 +56,31 @@ export function classifyTopologyNode(topology, node) {
   return 'core';
 }
 
+export function classifyTopologyNodeAt(topology, node, now = Date.now()) {
+  if (!topology || !node?.id) return 'node';
+
+  if (node.role !== 'CORE') {
+    if (node.status === 'OFFLINE') return 'offline-node';
+    if (isRecentlyRecoveredNode(node, now)) return 'recovered-node';
+    return 'node';
+  }
+
+  return classifyTopologyNode(topology, node);
+}
+
+function compareCoreEndpoints(left, right) {
+  const leftIp = String(left?.ip ?? '');
+  const rightIp = String(right?.ip ?? '');
+  const ipOrder = leftIp.localeCompare(rightIp, undefined, { numeric: true });
+  if (ipOrder !== 0) return ipOrder;
+
+  const leftPort = Number(left?.port ?? 0);
+  const rightPort = Number(right?.port ?? 0);
+  if (leftPort !== rightPort) return leftPort - rightPort;
+
+  return String(left?.id ?? '').localeCompare(String(right?.id ?? ''));
+}
+
 export function buildTopologyNodeLabel(topology, node) {
   const shortId = String(node?.id ?? '').slice(0, 8);
   if (!shortId) return '';
@@ -70,37 +97,27 @@ export function buildTopologyNodeLabel(topology, node) {
 export function buildTopologyNodePositions(topology, nodes) {
   const safeNodes = (Array.isArray(nodes) ? nodes : []).filter((node) => node?.id);
   const positions = {};
-
-  const activeCore = safeNodes.find((node) => node.id === topology?.active_core_id) ?? null;
-  const backupCore = safeNodes.find((node) => node.id === topology?.backup_core_id) ?? null;
-  const otherCores = safeNodes.filter((node) => (
-    node.role === 'CORE' &&
-    node.id !== activeCore?.id &&
-    node.id !== backupCore?.id
-  ));
+  const coreNodes = safeNodes
+    .filter((node) => node.role === 'CORE')
+    .sort(compareCoreEndpoints);
 
   let edgeAnchor = { x: 0, y: TOP_ROW_Y + EDGE_CENTER_Y_OFFSET };
-
-  if (activeCore && backupCore && activeCore.id !== backupCore.id) {
-    positions[activeCore.id] = { x: -CORE_GAP_X / 2, y: TOP_ROW_Y };
-    positions[backupCore.id] = { x: CORE_GAP_X / 2, y: TOP_ROW_Y };
-    edgeAnchor = { x: 0, y: TOP_ROW_Y + EDGE_CENTER_Y_OFFSET };
-  } else if (activeCore) {
-    positions[activeCore.id] = { x: 0, y: TOP_ROW_Y };
-    edgeAnchor = { x: 0, y: TOP_ROW_Y + EDGE_CENTER_Y_OFFSET };
-  } else if (backupCore) {
-    positions[backupCore.id] = { x: 0, y: TOP_ROW_Y };
-    edgeAnchor = { x: 0, y: TOP_ROW_Y + EDGE_CENTER_Y_OFFSET };
+  if (coreNodes.length === 1) {
+    positions[coreNodes[0].id] = { x: 0, y: TOP_ROW_Y };
+  } else if (coreNodes.length === 2) {
+    positions[coreNodes[0].id] = { x: -CORE_GAP_X / 2, y: TOP_ROW_Y };
+    positions[coreNodes[1].id] = { x: CORE_GAP_X / 2, y: TOP_ROW_Y };
+  } else if (coreNodes.length > 2) {
+    coreNodes.forEach((node, index) => {
+      const direction = index % 2 === 0 ? -1 : 1;
+      const offsetIndex = Math.floor(index / 2);
+      const baseX = offsetIndex === 0 ? CORE_GAP_X / 2 : CORE_GAP_X / 2 + EXTRA_CORE_GAP_X * offsetIndex;
+      positions[node.id] = {
+        x: direction * baseX,
+        y: TOP_ROW_Y + (offsetIndex === 0 ? 0 : 32),
+      };
+    });
   }
-
-  otherCores.forEach((node, index) => {
-    const direction = index % 2 === 0 ? -1 : 1;
-    const offsetIndex = Math.floor(index / 2) + 1;
-    positions[node.id] = {
-      x: direction * (CORE_GAP_X / 2 + EXTRA_CORE_GAP_X * offsetIndex),
-      y: TOP_ROW_Y + 32,
-    };
-  });
 
   const edgeNodes = safeNodes
     .filter((node) => node.role !== 'CORE')

@@ -1,12 +1,13 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import {
   buildTopologyGraphLinks,
   buildTopologyNodeLabel,
   buildTopologyNodePositions,
   classifyTopologyLink,
-  classifyTopologyNode,
+  classifyTopologyNodeAt,
 } from './topologyGraphModel.js';
+import { getRecentRecoveryDeadline } from '../mqtt/nodeTransitions.js';
 
 /**
  * TopologyGraph
@@ -28,6 +29,7 @@ export default function TopologyGraph({ topology, onNodeClick, nodeDisplayMap })
   const cyRef = useRef(null);
   const onNodeClickRef = useRef(onNodeClick);
   const resizeRafRef = useRef(null);
+  const [transitionEpoch, setTransitionEpoch] = useState(0);
 
   useEffect(() => {
     onNodeClickRef.current = onNodeClick;
@@ -142,6 +144,17 @@ export default function TopologyGraph({ topology, onNodeClick, nodeDisplayMap })
             opacity: 0.72,
             'shadow-color': '#ef4444',
             'shadow-opacity': 0.2,
+          },
+        },
+        {
+          selector: 'node[nodeKind = "recovered-node"]',
+          style: {
+            'background-color': '#57be5f',
+            'border-width': 4,
+            'border-color': '#7dd3fc',
+            'shadow-color': '#22d3ee',
+            'shadow-opacity': 0.42,
+            'shadow-blur': 22,
           },
         },
         {
@@ -267,10 +280,32 @@ export default function TopologyGraph({ topology, onNodeClick, nodeDisplayMap })
       return;
     }
 
+    const recoveryDeadlines = topology.nodes
+      .map(node => getRecentRecoveryDeadline(node))
+      .filter(deadline => Number.isFinite(deadline) && deadline > Date.now());
+    if (recoveryDeadlines.length > 0) {
+      const nextDeadline = Math.min(...recoveryDeadlines);
+      const timer = setTimeout(() => {
+        setTransitionEpoch(prev => prev + 1);
+      }, Math.max(0, nextDeadline - Date.now()) + 60);
+      return () => clearTimeout(timer);
+    }
+  }, [topology, transitionEpoch]);
+
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy || cy.destroyed()) return;
+
+    if (!topology || !Array.isArray(topology.nodes) || !Array.isArray(topology.links)) {
+      cy.elements().remove();
+      return;
+    }
+
     const visibleNodes = topology.nodes.filter((node) => {
       return !(node.role === 'CORE' && node.status === 'OFFLINE');
     });
     const nodePositions = buildTopologyNodePositions(topology, visibleNodes);
+    const renderNow = Date.now();
 
     const elements = [];
 
@@ -283,7 +318,7 @@ export default function TopologyGraph({ topology, onNodeClick, nodeDisplayMap })
           label: nodeDisplayMap?.get(rawId)?.graphLabel ?? buildTopologyNodeLabel(topology, n),
           role: n.role ?? 'NODE',
           status: n.status ?? 'ONLINE',
-          nodeKind: classifyTopologyNode(topology, n),
+          nodeKind: classifyTopologyNodeAt(topology, n, renderNow),
         },
         position: nodePositions[rawId] ?? { x: 0, y: 0 },
       });
@@ -330,7 +365,7 @@ export default function TopologyGraph({ topology, onNodeClick, nodeDisplayMap })
       cy.resize();
       layout.run();
     });
-  }, [topology]);
+  }, [topology, nodeDisplayMap, transitionEpoch]);
 
   return (
     <div

@@ -588,6 +588,8 @@ static void tc_set_node_status_is_idempotent() {
 
     CHECK_TRUE(ct.setNodeStatus(NODE_1, NODE_STATUS_ONLINE));
     CHECK_EQ(ct.findNode(NODE_1)->status, NODE_STATUS_ONLINE);
+    CHECK_EQ(ct.findNode(NODE_1)->previous_status, NODE_STATUS_OFFLINE);
+    CHECK_TRUE(ct.findNode(NODE_1)->status_changed_at[0] != '\0');
 
     end_test("TC-16: setNodeStatus — 동일 상태 재적용은 no-op");
 }
