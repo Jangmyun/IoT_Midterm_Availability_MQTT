@@ -94,7 +94,11 @@ typedef struct {
 #define TOPIC_ELECTION_RESULT  "_core/election/result"        /* C-04: 선출 결과(투표) */
 
 // ── MQTT Topics: Edge ─────────────────────────────────────────────────────────
-#define TOPIC_LWT_NODE_PREFIX  "campus/will/node/"            /* W-02 LWT publish prefix */
-#define TOPIC_STATUS_PREFIX    "campus/monitor/status/"       /* M-03 publish prefix */
-#define TOPIC_PING_PREFIX      "campus/monitor/ping/"         /* M-01 subscribe prefix */
-#define TOPIC_PONG_PREFIX      "campus/monitor/pong/"         /* M-02 publish prefix */
+#define TOPIC_LWT_NODE_PREFIX       "campus/will/node/"               /* W-02 LWT publish prefix */
+#define TOPIC_STATUS_PREFIX         "campus/monitor/status/"          /* M-03 publish prefix */
+#define TOPIC_STATUS_RELAY_PREFIX   "campus/monitor/status_relay/"    /* peer 경유 등록 prefix */
+#define TOPIC_STATUS_RELAY_ALL      "campus/monitor/status_relay/#"   /* Core subscribe */
+#define TOPIC_RTT_PREFIX            "campus/monitor/rtt/"             /* Edge간 RTT 보고 prefix */
+#define TOPIC_RTT_ALL               "campus/monitor/rtt/#"            /* Core subscribe */
+#define TOPIC_PING_PREFIX           "campus/monitor/ping/"            /* M-01 subscribe prefix */
+#define TOPIC_PONG_PREFIX           "campus/monitor/pong/"            /* M-02 publish prefix */

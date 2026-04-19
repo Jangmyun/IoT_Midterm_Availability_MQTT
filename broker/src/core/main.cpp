@@ -177,6 +177,8 @@ static void on_connect(struct mosquitto* mosq, void* userdata, int rc) {
     mosquitto_subscribe(mosq, nullptr, TOPIC_NODE_WILL_ALL, 1);
     mosquitto_subscribe(mosq, nullptr, TOPIC_CORE_WILL_ALL, 1);
     mosquitto_subscribe(mosq, nullptr, TOPIC_ELECTION_ALL, 1);
+    mosquitto_subscribe(mosq, nullptr, TOPIC_STATUS_RELAY_ALL, 1);  // peer 경유 edge 등록
+    mosquitto_subscribe(mosq, nullptr, TOPIC_RTT_ALL, 1);           // edge간 RTT 보고
 
     // Active only: receive Backup's nodes
     if (!ctx->is_backup) {
@@ -307,6 +309,80 @@ static void on_message(struct mosquitto* mosq, void* userdata,
             }
         }
         // else: already ONLINE, ignore duplicate
+        return;
+    }
+
+    // Peer 경유 Edge 등록 (campus/monitor/status_relay/<forwarder_id>/<node_id>)
+    // forwarder→node 링크 생성 (Core→node 직결 링크 없음), hop_to_core=2
+    if (strncmp(msg->topic, TOPIC_STATUS_RELAY_PREFIX, strlen(TOPIC_STATUS_RELAY_PREFIX)) == 0) {
+        MqttMessage reg = {};
+        std::string json(static_cast<char*>(msg->payload), msg->payloadlen);
+        if (!mqtt_message_from_json(json, reg)) return;
+
+        // 토픽에서 forwarder_id / node_id 파싱
+        const char* ids_start = msg->topic + strlen(TOPIC_STATUS_RELAY_PREFIX);
+        const char* slash = strchr(ids_start, '/');
+        if (!slash || (slash - ids_start) >= (int)UUID_LEN) return;
+
+        char forwarder_id[UUID_LEN] = {};
+        strncpy(forwarder_id, ids_start, (size_t)(slash - ids_start));
+        const char* relay_node_id = slash + 1;
+
+        char node_ip[IP_LEN] = {};
+        int  node_port = 0;
+        if (!parse_ip_port(reg.payload.description, node_ip, sizeof(node_ip), &node_port)) {
+            fprintf(stderr, "[core] bad relay status description: '%s'\n", reg.payload.description);
+            return;
+        }
+
+        NodeEntry node = {};
+        strncpy(node.id, relay_node_id, UUID_LEN - 1);
+        node.role = NODE_ROLE_NODE;
+        strncpy(node.ip, node_ip, IP_LEN - 1);
+        node.port = (uint16_t)node_port;
+        node.status = NODE_STATUS_ONLINE;
+        node.hop_to_core = 2;
+
+        bool changed = false;
+        auto existing = ctx->ct_manager->findNode(relay_node_id);
+        if (!existing) {
+            changed = ctx->ct_manager->addNode(node) || changed;
+        } else if (existing->status == NODE_STATUS_OFFLINE) {
+            changed = ctx->ct_manager->updateNode(node) || changed;
+        }
+        // forwarder→node 링크 (직결이 아닌 peer 경로)
+        changed = ensure_link(ctx->ct_manager, forwarder_id, relay_node_id) || changed;
+
+        if (changed) {
+            on_ct_changed(mosq, ctx);
+            printf("[core] peer-relay edge registered: %s via %s  %s:%d\n",
+                relay_node_id, forwarder_id, node_ip, node_port);
+        }
+        return;
+    }
+
+    // Edge간 RTT 보고 (campus/monitor/rtt/<from_id>/<to_id>) → CT 링크 RTT 업데이트
+    if (strncmp(msg->topic, TOPIC_RTT_PREFIX, strlen(TOPIC_RTT_PREFIX)) == 0) {
+        const char* ids_start = msg->topic + strlen(TOPIC_RTT_PREFIX);
+        const char* slash = strchr(ids_start, '/');
+        if (!slash || (slash - ids_start) >= (int)UUID_LEN) return;
+
+        char from_id[UUID_LEN] = {};
+        strncpy(from_id, ids_start, (size_t)(slash - ids_start));
+        const char* to_id = slash + 1;
+
+        std::string payload_str(static_cast<char*>(msg->payload), msg->payloadlen);
+        float rtt_ms = (float)atof(payload_str.c_str());
+        if (rtt_ms <= 0.0f) return;
+
+        LinkEntry link = {};
+        strncpy(link.from_id, from_id, UUID_LEN - 1);
+        strncpy(link.to_id, to_id, UUID_LEN - 1);
+        link.rtt_ms = rtt_ms;
+        if (ctx->ct_manager->addLink(link)) {
+            on_ct_changed(mosq, ctx);
+            printf("[core] RTT link updated: %s→%s  %.2fms\n", from_id, to_id, rtt_ms);
+        }
         return;
     }
 

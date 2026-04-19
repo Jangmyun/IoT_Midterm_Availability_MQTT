@@ -499,6 +499,22 @@ static void process_pong(EdgeContext* ctx, const struct mosquitto_message* msg)
     link.rtt_ms = rtt_ms;
     ctx->ct_manager->addLink(link);
 
+    // Core CT에 peer 링크 RTT 보고 → 클라이언트 그래프 peer-link 표시
+    {
+        UpstreamConn* core_up = find_upstream(ctx, UpstreamKind::CORE);
+        if (!core_up) core_up = find_upstream(ctx, UpstreamKind::BACKUP);
+        if (core_up && core_up->mosq)
+        {
+            char rtt_topic[256];
+            std::snprintf(rtt_topic, sizeof(rtt_topic),
+                "%s%s/%s", TOPIC_RTT_PREFIX, ctx->edge_id, pong.source.id);
+            char rtt_payload[32];
+            std::snprintf(rtt_payload, sizeof(rtt_payload), "%.2f", rtt_ms);
+            mosquitto_publish(core_up->mosq, nullptr, rtt_topic,
+                (int)std::strlen(rtt_payload), rtt_payload, 1, false);
+        }
+    }
+
     std::string best = select_relay_node(*ctx->ct_manager, ctx->edge_id);
     if (!best.empty())
     {
@@ -926,9 +942,15 @@ static void on_message_local(struct mosquitto* /*mosq*/, void* userdata,
         if (!up) up = find_upstream(ctx, UpstreamKind::BACKUP);
         if (up && up->mosq)
         {
-            mosquitto_publish(up->mosq, nullptr, msg->topic,
+            // campus/monitor/status_relay/<this_edge_id>/<peer_node_id>
+            // Core 가 이 토픽을 받으면 peer→node 링크를 생성 (Core→node 직결 링크 아님)
+            const char* peer_node_id = msg->topic + std::strlen(TOPIC_STATUS_PREFIX);
+            char relay_topic[256];
+            std::snprintf(relay_topic, sizeof(relay_topic),
+                "%s%s/%s", TOPIC_STATUS_RELAY_PREFIX, ctx->edge_id, peer_node_id);
+            mosquitto_publish(up->mosq, nullptr, relay_topic,
                 msg->payloadlen, msg->payload, 1, false);
-            std::printf("[edge] forwarded peer status: %s\n", msg->topic);
+            std::printf("[edge] forwarded peer status: %s\n", relay_topic);
         }
         return;
     }
