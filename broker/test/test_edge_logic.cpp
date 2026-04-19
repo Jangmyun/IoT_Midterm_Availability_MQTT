@@ -1,6 +1,7 @@
 // test_edge_logic.cpp
 // Edge 헬퍼 함수 단위 테스트: infer_msg_type, infer_priority,
-//                              parse_building_camera, select_relay_node
+//                              parse_building_camera, select_relay_node,
+//                              upstream_find, upstream_preferred, upstream_choose
 //
 // 외부 프레임워크 없음 — 빌드 후 ./build/test_edge_logic 으로 실행
 
@@ -9,6 +10,7 @@
 #include <cmath>
 #include <string>
 #include "edge_helpers.h"
+#include "edge_upstream.h"
 #include "connection_table_manager.h"
 #include "mqtt_json.h"
 #include "publisher_helpers.h"
@@ -391,6 +393,150 @@ static void tc_select_relay_no_candidates() {
     end_test("TC-08: select_relay_node — 후보 없을 때 빈 문자열 반환");
 }
 
+// ── TC-11~17: upstream_find / upstream_preferred / upstream_choose ────────────
+
+// 테스트용 더미 non-null mosquitto 포인터 (실제 연결 불필요)
+static struct mosquitto* DUMMY_MOSQ = reinterpret_cast<struct mosquitto*>(0x1);
+
+static void tc_upstream_find_returns_connected_core() {
+    begin_test("TC-11: upstream_find — connected CORE 반환");
+
+    UpstreamConn conns[MAX_UPSTREAM] = {};
+    conns[0].mosq      = DUMMY_MOSQ;
+    conns[0].kind      = UpstreamKind::CORE;
+    conns[0].connected = true;
+    conns[1].mosq      = DUMMY_MOSQ;
+    conns[1].kind      = UpstreamKind::BACKUP;
+    conns[1].connected = true;
+
+    UpstreamConn* result = upstream_find(conns, 2, UpstreamKind::CORE);
+    CHECK(result != nullptr);
+    CHECK(result == &conns[0]);
+
+    end_test("TC-11: upstream_find — connected CORE 반환");
+}
+
+static void tc_upstream_find_skips_disconnected() {
+    begin_test("TC-12: upstream_find — disconnected 슬롯 건너뜀");
+
+    UpstreamConn conns[MAX_UPSTREAM] = {};
+    conns[0].mosq      = DUMMY_MOSQ;
+    conns[0].kind      = UpstreamKind::CORE;
+    conns[0].connected = false;  // disconnected
+
+    UpstreamConn* result = upstream_find(conns, 1, UpstreamKind::CORE);
+    CHECK(result == nullptr);
+
+    end_test("TC-12: upstream_find — disconnected 슬롯 건너뜀");
+}
+
+static void tc_upstream_find_skips_tombstone() {
+    begin_test("TC-13: upstream_find — mosq=nullptr tombstone 건너뜀");
+
+    UpstreamConn conns[MAX_UPSTREAM] = {};
+    conns[0].mosq      = nullptr;  // tombstone
+    conns[0].kind      = UpstreamKind::CORE;
+    conns[0].connected = true;
+
+    UpstreamConn* result = upstream_find(conns, 1, UpstreamKind::CORE);
+    CHECK(result == nullptr);
+
+    end_test("TC-13: upstream_find — mosq=nullptr tombstone 건너뜀");
+}
+
+static void tc_upstream_preferred_returns_flagged_slot() {
+    begin_test("TC-14: upstream_preferred — preferred=true 슬롯 반환");
+
+    UpstreamConn conns[MAX_UPSTREAM] = {};
+    conns[0].mosq      = DUMMY_MOSQ;
+    conns[0].kind      = UpstreamKind::CORE;
+    conns[0].connected = true;
+    conns[0].preferred = false;
+
+    conns[1].mosq      = DUMMY_MOSQ;
+    conns[1].kind      = UpstreamKind::BACKUP;
+    conns[1].connected = true;
+    conns[1].preferred = true;  // ← preferred
+
+    UpstreamConn* result = upstream_preferred(conns, 2);
+    CHECK(result != nullptr);
+    CHECK(result == &conns[1]);
+
+    end_test("TC-14: upstream_preferred — preferred=true 슬롯 반환");
+}
+
+static void tc_upstream_choose_prefers_preferred_over_core() {
+    begin_test("TC-15: upstream_choose — preferred 슬롯이 CORE 보다 우선");
+
+    UpstreamConn conns[MAX_UPSTREAM] = {};
+    conns[0].mosq      = DUMMY_MOSQ;
+    conns[0].kind      = UpstreamKind::CORE;
+    conns[0].connected = true;
+    conns[0].preferred = false;
+
+    conns[1].mosq      = DUMMY_MOSQ;
+    conns[1].kind      = UpstreamKind::BACKUP;
+    conns[1].connected = true;
+    conns[1].preferred = true;  // ← preferred
+
+    UpstreamConn* chosen = upstream_choose(conns, 2);
+    CHECK(chosen != nullptr);
+    CHECK(chosen == &conns[1]);  // preferred BACKUP 선택됨
+
+    end_test("TC-15: upstream_choose — preferred 슬롯이 CORE 보다 우선");
+}
+
+static void tc_upstream_choose_fallback_order() {
+    begin_test("TC-16: upstream_choose — CORE 불가 시 BACKUP → PEER_EDGE 순 폴백");
+
+    UpstreamConn conns[MAX_UPSTREAM] = {};
+    // CORE: disconnected
+    conns[0].mosq      = DUMMY_MOSQ;
+    conns[0].kind      = UpstreamKind::CORE;
+    conns[0].connected = false;
+    // BACKUP: connected
+    conns[1].mosq      = DUMMY_MOSQ;
+    conns[1].kind      = UpstreamKind::BACKUP;
+    conns[1].connected = true;
+    // PEER_EDGE: connected
+    conns[2].mosq      = DUMMY_MOSQ;
+    conns[2].kind      = UpstreamKind::PEER_EDGE;
+    conns[2].connected = true;
+
+    // CORE 불가 → BACKUP 선택
+    UpstreamConn* chosen = upstream_choose(conns, 3);
+    CHECK(chosen != nullptr);
+    CHECK(chosen->kind == UpstreamKind::BACKUP);
+
+    // BACKUP 도 끊으면 → PEER_EDGE 선택
+    conns[1].connected = false;
+    chosen = upstream_choose(conns, 3);
+    CHECK(chosen != nullptr);
+    CHECK(chosen->kind == UpstreamKind::PEER_EDGE);
+
+    end_test("TC-16: upstream_choose — CORE 불가 시 BACKUP → PEER_EDGE 순 폴백");
+}
+
+static void tc_upstream_choose_returns_null_when_all_disconnected() {
+    begin_test("TC-17: upstream_choose — 모든 슬롯 disconnected 시 nullptr");
+
+    UpstreamConn conns[MAX_UPSTREAM] = {};
+    conns[0].mosq      = DUMMY_MOSQ;
+    conns[0].kind      = UpstreamKind::CORE;
+    conns[0].connected = false;
+    conns[1].mosq      = DUMMY_MOSQ;
+    conns[1].kind      = UpstreamKind::BACKUP;
+    conns[1].connected = false;
+    conns[2].mosq      = DUMMY_MOSQ;
+    conns[2].kind      = UpstreamKind::PEER_EDGE;
+    conns[2].connected = false;
+
+    UpstreamConn* chosen = upstream_choose(conns, 3);
+    CHECK(chosen == nullptr);
+
+    end_test("TC-17: upstream_choose — 모든 슬롯 disconnected 시 nullptr");
+}
+
 // ── TC-09: should_failover_on_core_will — active core에만 반응 ───────────────
 
 static void tc_should_failover_on_active_core_will() {
@@ -440,6 +586,13 @@ int main() {
     tc_select_relay_no_candidates();
     tc_should_failover_on_active_core_will();
     tc_should_failover_without_active_core_id();
+    tc_upstream_find_returns_connected_core();
+    tc_upstream_find_skips_disconnected();
+    tc_upstream_find_skips_tombstone();
+    tc_upstream_preferred_returns_flagged_slot();
+    tc_upstream_choose_prefers_preferred_over_core();
+    tc_upstream_choose_fallback_order();
+    tc_upstream_choose_returns_null_when_all_disconnected();
 
     printf("══════════════════════════════════════\n");
     printf("  결과: %d passed, %d failed\n", g_pass, g_fail);
