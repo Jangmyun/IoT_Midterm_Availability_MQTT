@@ -94,9 +94,14 @@ Active Core 종료 후 Backup이 승격된 상태에서, 원래 Active를 Backup
 혁민 Mac (`192.168.0.7`) 이 재진입할 때:
 
 ```bash
+# 인수 없음 (기본값: new_active = 192.168.0.8)
 bash demo/presentation-hm-rpi1.sh rejoin-as-backup
-# = core_broker 192.168.0.7 1883  192.168.0.8 1883
-# (새 Active = 라즈베리 1 에 peer 연결)
+
+# 또는 new_active 명시 (결과 동일)
+bash demo/presentation-hm-rpi1.sh rejoin-as-backup 192.168.0.8 1883
+
+# 두 경우 모두: core_broker 192.168.0.7 1883  192.168.0.8 1883
+# self는 항상 192.168.0.7로 고정, 첫 인수는 peer(새 Active) 주소
 ```
 
 라즈베리 1 (`192.168.0.8`) 이 재진입할 때 (역할 역전 후):
