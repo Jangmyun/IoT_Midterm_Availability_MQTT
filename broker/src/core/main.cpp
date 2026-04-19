@@ -567,8 +567,6 @@ static void on_message_peer(struct mosquitto* mosq, void* userdata,
         if (changed) {
             // Backup's own broker에 merged CT 배포
             publish_topology(ctx->mosq_self, ctx);
-            // Active에 Backup 노드 재전송 (변경이 있을 때만)
-            publish_node_register(ctx);
             printf("[core/backup] merged active CT, ct.version=%d\n",
                 ctx->ct_manager->snapshot().version);
         }
