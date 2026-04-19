@@ -641,6 +641,8 @@ paho-mqtt 2.x + pytest 기반 통합 테스트. 실제 바이너리(`core_broker
 | `test_04_dedup.py` | 이벤트 중복 방지 | 동일 `msg_id` 2회 발행 → Core 로그 `event forwarded` 1회, 다른 `msg_id` → 각각 재발행 | FR-02 |
 | `test_05_ct_sync.py` | CT 동기화 | 노드 등록 후 `_core/sync/connection_table` 갱신·발행, CT에 node_id 포함, version 증가, Backup 수신 확인 | FR-01, C-01 |
 | `test_06_rtt_relay.py` | RTT 측정·Relay 선택 | Core+Edge×2 기동 → CT 수신 후 Ping 발송, Pong 수신 RTT 계산, relay node 선택, OFFLINE node 후보 제외 확인 | FR-08 |
+| `test_09_relay_ack.py` | Relay ACK 검증 (H-3, R-02) | Core가 이벤트 처리 후 `campus/relay/ack/<msg_id>` 발행 확인, 중복 msg_id dedup, Backup Core relay/ack 포함 4개 케이스 | FR-02, R-02 |
+| `test_10_core_rejoin.py` | Core ID 영속화 검증 | 최초 실행 시 `/tmp/core_id_<port>.txt` 생성, 재시작 후 동일 UUID 유지, Backup 모드 재진입 시 UUID 연속성 보장 | 15.1.1 |
 
 공통 인프라 (`test/integration/conftest.py`):
 
@@ -653,6 +655,7 @@ paho-mqtt 2.x + pytest 기반 통합 테스트. 실제 바이너리(`core_broker
 | `wait_log()` | 로그 파일에서 regex 패턴 대기 |
 | `_clear_retained()` / `clear_retained_before_session` | 테스트 세션 전후 retained 메시지(`campus/monitor/topology`, `_core/sync/connection_table`) 초기화 — 잔류 CT로 인한 version 충돌 방지 |
 | `active_core` fixture retained 클리어 | `active_core` 픽스처 setup/teardown 시 retained 클리어 → stale CT 버전 오염 방지 |
+| `_clear_core_id_file()` / `active_core`·`backup_core` 픽스처 통합 | 테스트 전 `/tmp/core_id_<port>.txt` 삭제 → Active·Backup이 동일 포트 공유 시 UUID 충돌 방지 |
 
 공통 인프라 (`test/lib/common.sh`):
 
@@ -672,6 +675,197 @@ paho-mqtt 2.x + pytest 기반 통합 테스트. 실제 바이너리(`core_broker
 | 단위 테스트 | `broker/test/test_edge_logic.cpp` | TC-01~TC-08 (32 assertions) — CMake `test_edge_logic` 타겟 등록 |
 | 통합 테스트 | `test/integration/test_06_rtt_relay.py` | TC-01~TC-04 — Ping 발송·RTT 계산·Relay 선택·OFFLINE 제외 end-to-end 검증 |
 | 쉘 테스트 | `test/edge/05_rtt_relay.sh` | 2-Edge 환경에서 RTT 측정·Relay 선택 로그 패턴 확인 |
+
+---
+
+## 15. 구현 검토 결과 및 미비 사항 (2026-04-19 기준)
+
+> 코드 전체 정적 분석 + 통합 테스트 25개 통과 이후 수행한 심층 검토 결과.
+> **현재 시스템은 2-core + localhost 환경의 통제된 테스트에서 정상 동작하나, 실제 배포 환경에서 발생할 수 있는 미비 사항을 우선도 순으로 정리한다.**
+
+---
+
+### 15.1 우선도 HIGH — 이벤트 유실 가능성
+
+#### H-1: `connected` 플래그와 실제 소켓 상태 불일치 (Race Condition) ✅ 완료
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | `broker/src/edge/main.cpp` — `on_message_upstream()` 내 core_switch 처리부 및 CT active_core_id 변경 감지부 |
+| **현상** | `mosquitto_disconnect()` 직후 `up.connected` 플래그를 `false`로 세팅하지 않음 |
+| **실패 시나리오** | Core IP 변경 감지 → `disconnect()` 호출 후 `connect_async()` 완료 전 인입 이벤트가 `connected=true` 상태의 죽은 소켓으로 발행됨 → MQTT 레이어에서 조용히 유실 |
+| **재현 조건** | Core failover 중 고빈도 이벤트 발행 시 |
+| **조치** | `mosquitto_disconnect()` 호출 직전 `core_slot->connected = false` 세팅 — core_switch 수신부(L743), CT active_core_id 변경부(L660) 두 곳 모두 적용 |
+
+#### H-2: NIC 장애 시 Zombie TCP 연결 미감지 ✅ 완료
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | Edge ↔ Core upstream 연결 전반 |
+| **현상** | Core 프로세스는 살아있으나 NIC가 다운되면 TCP 소켓은 정상처럼 보임. MQTT CONNACK 성공 이후 데이터만 흐르지 않는 상태 |
+| **실패 시나리오** | Edge가 Core를 ONLINE으로 판단해 계속 publish → 메시지는 커널 send buffer에 적체 → store-and-forward 큐는 비어있음 → 네트워크 복구 후 오래된 메시지가 뒤늦게 전달되거나 retransmit 타임아웃 후 유실 |
+| **재현 조건** | NIC 레벨 장애 (라우터 다운, 케이블 단절 등) |
+| **조치** | mosquitto keepalive 60s → 10s로 단축 적용 — edge/main.cpp 5곳(Core·Peer·Backup upstream), core/main.cpp 2곳(mosq, mosq_peer). mosq_local(localhost)은 제외 |
+
+#### H-3: PUBACK 수신 전 Core 크래시 시 이벤트 유실 ✅ 완료
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | Edge → Core QoS 1 publish 경로 전반 |
+| **현상** | QoS 1은 PUBACK 수신 전까지 재전송을 보장하지만, Core가 PUBACK 전에 크래시하면 Edge는 재연결 후 해당 메시지를 재전송하지 않음 (mosquitto 세션 클린 플래그 = true로 추정) |
+| **실패 시나리오** | Core 처리 직전 크래시 → Edge 재연결 후 새 세션 시작 → 이전 미확인 메시지 소실 |
+| **조치** | R-02 (`campus/relay/ack/<msg_id>`) application-level ACK 활용 — Core가 이벤트 처리 후 ack 발행, Edge는 ack 수신 전까지 pending_msgs에 보관, CORE/BACKUP disconnect 시 pending → store_queue 앞에 재삽입 → flush 시 재전송. Core의 seen_msg_ids dedup으로 중복 전달 안전 처리. |
+
+---
+
+### 15.1.1 Active Core Backup 재진입 문제 ✅ 완료
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | `broker/src/core/main.cpp` — main() 초기화부 |
+| **현상** | Active Core SIGKILL 후 재시작 시 `uuid_generate()`로 새 UUID 생성 → CT 내 이전 core_id와 불일치, Edge/Backup이 "다른 노드"로 인식 |
+| **실패 시나리오** | A(Active) SIGKILL → B(Backup→Active 승격) → A 재시작 시 새 UUID → CT에서 A가 전혀 다른 노드로 등록, backup_core_id 불일치 |
+| **조치** | core_id 파일 영속화 (`/tmp/core_id_<port>.txt`) — 최초 실행 시 UUID 생성 후 저장, 재시작 시 파일에서 읽어 동일 UUID 재사용. 기존 `merge_backup_registration`이 동일 UUID 기준으로 backup_core_id 갱신하므로 재진입 시 CT continuity 자동 보장. |
+
+---
+
+### 15.2 우선도 MEDIUM — 연결 안정성
+
+#### M-1: flush_store_queue 첫 항목 실패 시 나머지 큐 중단
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | `broker/src/edge/main.cpp` — `flush_store_queue()` |
+| **현상** | 큐 첫 항목 전송 실패 시 `return`으로 즉시 종료. 이후 항목들은 다음 `flush` 호출까지 대기 |
+| **실패 시나리오** | 큐에 100개 이벤트 적체 → 첫 항목 전송 중 네트워크 순간 끊김 → 전체 flush 중단 → 재연결 후 flush 재시작 필요 → 복구 지연 |
+| **조치** | 실패한 항목을 큐 맨 앞으로 반환하되, 나머지 항목은 계속 flush 시도. 또는 지수 백오프 후 전체 재시도 |
+
+#### M-2: relay_node_id 비보호 concurrent access
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | `broker/src/edge/main.cpp` — `process_pong()` 내 `strncpy(ctx->relay_node_id, ...)` |
+| **현상** | `ping_mutex`를 해제한 이후 `relay_node_id`를 갱신. `forward_message_upstream()`에서 락 없이 `relay_node_id` 읽음 |
+| **실패 시나리오** | 메시지 핸들러와 pong 핸들러가 동시에 동작할 때 반쪽만 쓰인 UUID가 사용될 수 있음 |
+| **조치** | `relay_node_id` 갱신 및 읽기 모두 `ping_mutex` 또는 별도 mutex로 보호 |
+
+#### M-3: 로컬 브로커 재시작 시 Edge 바이너리 재진입 없이 종료
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | `broker/src/edge/main.cpp` — `main()` 로컬 브로커 초기 연결부 |
+| **현상** | `mosquitto_connect(mosq_local, ...)` 실패 시 `return 1`로 바이너리 종료. 재시도 로직 없음 |
+| **실패 시나리오** | 로컬 mosquitto 브로커가 잠시 재시작되는 동안 Edge 바이너리가 시작되면 즉시 종료됨 |
+| **조치** | `mosquitto_reconnect_delay_set()` 으로 재연결 루프 구성, 또는 초기 연결에도 재시도 루프 적용 |
+
+#### M-4: 포트 TIME_WAIT로 인한 빠른 재시작 실패
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | OS 레벨 — Core/Edge 바이너리 재시작 시 |
+| **현상** | 프로세스 종료 후 OS가 해당 포트를 TIME_WAIT(30~120s) 상태로 유지. 동일 포트 재바인딩 시 EADDRINUSE |
+| **실패 시나리오** | Core SIGKILL → 즉시 재시작 시도 → "Address already in use" 오류로 재시작 실패 |
+| **재현 조건** | 테스트에서는 pytest fixture teardown에 `sleep(0.5)` 회피 처리가 되어있으나, 실제 배포에선 서비스 재시작 스크립트에서 동일 문제 발생 |
+| **조치** | mosquitto 또는 서비스 매니저 레벨에서 `SO_REUSEADDR` 옵션 적용 확인, 또는 재시작 스크립트에 충분한 대기 추가 |
+
+#### M-5: Backup Core가 peer 연결 대상을 정적으로만 참조
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | `broker/src/core/main.cpp` — `main()` Backup 초기화부 |
+| **현상** | Backup Core는 최초 설정된 `active_core_ip:port`로만 peer 재연결 시도. Active Core IP가 failover 중 변경되어도 Backup은 갱신된 주소를 알 수 없음 |
+| **실패 시나리오** | 3-core 구성에서 Core A(Active) → Core C(새 Active)로 전환 후 Core B(Backup)이 Core A에게 계속 peer 연결 시도 |
+| **조치** | Election 결과로 발행되는 `core_switch` 토픽을 Backup도 수신하여 peer 연결 대상 갱신 |
+
+---
+
+### 15.3 우선도 MEDIUM — FR 미완성 사항
+
+#### F-1: Election이 2-core 환경에서만 안전 (FR-10 부분 구현)
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | `broker/src/core/main.cpp` — election_result 핸들러 |
+| **현상** | `election_votes >= 1`이면 즉시 ACTIVE 전환. 2-core에서는 유효하나 3+ core에서는 과반수 미달 상태에서 다수 Core가 동시에 ACTIVE 선언 가능 |
+| **추가 이슈** | `election_winner` 필드는 코드에서 정의되어 있으나 실제 사용되지 않음 (다중 후보 투표 로직 미완성) |
+| **조치** | 전체 Core 수를 CT에서 카운팅하여 과반수(n/2 + 1) 임계값으로 전환, election timeout 추가 |
+
+#### F-2: QoS 1 end-to-end 보장 불완전 (FR-03 부분 구현)
+
+| 항목 | 내용 |
+|------|------|
+| **현상** | Edge → Core 구간은 MQTT QoS 1이지만, Core가 수신 후 Client로 republish하는 구간의 ACK 추적은 없음. Core 크래시 시 "수신했지만 republish 못한" 이벤트 유실 가능 |
+| **조치** | 프로젝트 제약(시험 범위) 내에서는 허용 가능. 단, PRD에 명시적 제약으로 문서화 |
+
+#### F-3: 이벤트 큐가 메모리 전용 — Edge 재시작 시 유실 (FR-07 부분 구현)
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | `broker/src/edge/main.cpp` — `EdgeContext::store_queue` (std::deque) |
+| **현상** | Store-and-Forward 큐가 프로세스 메모리에만 존재. Edge 바이너리 크래시 또는 재시작 시 적체된 이벤트 전량 유실 |
+| **조치** | 파일 기반 영속 큐(SQLite, LMDB, 또는 단순 append-only 파일)로 교체. 단, 구현 복잡도 증가 고려 필요 |
+
+---
+
+### 15.4 우선도 LOW — 장기 안정성
+
+#### L-1: Edge ID가 IP 기반 결정론적 생성 — DHCP 환경에서 UUID 변경
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | `broker/src/edge/main.cpp` — `main()` edge_id 생성부 |
+| **현상** | edge_id = `UUID(hash("edge:<ip>:<port>"))`. IP가 바뀌면 edge_id가 바뀌고 Core CT에 유령 노드 누적 |
+| **조치** | 최초 실행 시 UUID를 생성해 파일에 저장(`~/.edge_id` 등), 이후 재사용 |
+
+#### L-2: Pong 응답 토픽이 relay 경유 시 불일치 가능성
+
+| 항목 | 내용 |
+|------|------|
+| **위치** | `broker/src/edge/main.cpp` — `process_ping()` |
+| **현상** | Pong은 `campus/monitor/pong/<ping.source.id>`로 발행됨. Ping이 peer relay를 경유하면, Pong이 발행되는 브로커가 Pong 구독자의 브로커와 다를 수 있음 |
+| **재현 조건** | EdgeC(peer-only) → EdgeA(relay) → Core 구성에서 EdgeA가 EdgeC에게 Ping 전송 시 |
+| **조치** | Pong 토픽에 발행 브로커 경로 정보를 포함하거나, Pong을 Core 경유로 발행하도록 변경 |
+
+#### L-3: 이벤트 타임스탬프 클록 신뢰성 없음
+
+| 항목 | 내용 |
+|------|------|
+| **현상** | 모든 이벤트 타임스탬프는 Edge 시스템 클록 기준 UTC. NTP 동기화 미확인 시 수 시간 오차 발생 가능 |
+| **조치** | 배포 시 NTP 동기화 전제를 시스템 요구사항에 명시, 또는 Core 수신 시각을 추가 필드로 기록 |
+
+---
+
+### 15.5 현재 테스트 환경과 실제 배포 환경 간 전제 차이
+
+아래 조건들은 통합 테스트에서는 충족되어 있으나 실제 배포 시 별도 확인이 필요하다.
+
+| 전제 조건 | 테스트 환경 | 실제 배포 |
+|-----------|-------------|-----------|
+| Core 수 | 항상 2개 (Active + Backup) | 3+ 가능 시 election 로직 재검토 필요 |
+| 네트워크 | localhost (지연 < 1ms) | WAN 환경에서 reconnect/timeout 파라미터 재조정 필요 |
+| 브로커 재시작 타이밍 | fixture teardown에 sleep(0.5) 회피 처리 | 실제 서비스 재시작 스크립트에 TIME_WAIT 대기 추가 필요 |
+| 이벤트 큐 | 메모리 전용 (재시작 시 유실) | 영속 큐 또는 재시작 정책 수립 필요 |
+| 클록 동기화 | 단일 호스트이므로 무관 | NTP 동기화 필수 |
+| local broker 가용성 | 테스트 시작 전 mosquitto 기동 보장 | 오케스트레이션 환경에서 startup 순서 보장 필요 |
+
+---
+
+### 15.6 Phase 7 — 미비 사항 반영 후보 항목
+
+아래는 우선도에 따라 이후 Phase에서 반영 가능한 항목이다.
+
+| 항목 | 우선도 | 예상 작업량 | 관련 이슈 |
+|------|--------|-------------|-----------|
+| ~~disconnect 즉시 `connected=false` 세팅~~ | ~~HIGH~~ | ~~소 (1줄)~~ | H-1 ✅ |
+| ~~mosquitto keepalive 10s로 단축~~ | ~~HIGH~~ | ~~소~~ | H-2 ✅ |
+| ~~R-02 relay/ack application-level ACK (pending_msgs + requeue)~~ | ~~HIGH~~ | ~~중~~ | H-3 ✅ |
+| ~~core_id 파일 영속화 (`/tmp/core_id_<port>.txt`)~~ | ~~HIGH~~ | ~~소~~ | 15.1.1 ✅ |
+| flush_store_queue 첫 실패 시 나머지 계속 flush | MEDIUM | 소~중 | M-1 |
+| relay_node_id mutex 보호 | MEDIUM | 소 | M-2 |
+| 로컬 broker 초기 연결 재시도 루프 | MEDIUM | 중 | M-3 |
+| Election quorum = n/2+1 동적 계산 | MEDIUM | 중~대 | F-1 |
+| election_winner 필드 실제 다중 후보 투표에 사용 | MEDIUM | 대 | F-1 |
+| Edge ID 파일 영속화 | LOW | 소~중 | L-1 |
 
 ---
 
