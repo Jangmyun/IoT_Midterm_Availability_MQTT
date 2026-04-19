@@ -73,6 +73,10 @@ struct EdgeContext
 
     // 현재 선택된 최적 Relay Node UUID (없으면 빈 문자열) (FR-08)
     char relay_node_id[UUID_LEN];
+
+    // application-level ACK pending 추적 (H-3): Core로부터 relay/ack 수신 전까지 보관
+    std::unordered_map<std::string, QueuedEvent> pending_msgs;  // msg_id → event
+    std::mutex pending_mutex;
 };
 
 // ── 인라인 접근 헬퍼 ──────────────────────────────────────────────────────────
@@ -260,29 +264,45 @@ static bool publish_to_upstream(struct mosquitto* mosq, const char* label,
 
 static bool forward_message_upstream(EdgeContext* ctx, const char* topic, const MqttMessage& msg)
 {
+    // Core/Backup 전송 성공 시 pending_msgs에 등록 (H-3: relay/ack 수신 전까지 보관)
+    auto add_pending = [&]() {
+        std::lock_guard<std::mutex> lock(ctx->pending_mutex);
+        QueuedEvent qe = {};
+        std::strncpy(qe.topic, topic, sizeof(qe.topic) - 1);
+        qe.msg = msg;
+        ctx->pending_msgs[std::string(msg.msg_id)] = qe;
+    };
+
     // 1. preferred 슬롯 (페일오버 우선 경로)
     if (UpstreamConn* pref = preferred_upstream_conn(ctx))
     {
         const char* label = (pref->kind == UpstreamKind::BACKUP) ? "backup core" : "peer edge";
-        if (publish_to_upstream(pref->mosq, label, topic, msg))
+        if (publish_to_upstream(pref->mosq, label, topic, msg)) {
+            if (pref->kind == UpstreamKind::BACKUP)
+                add_pending();
             return true;
+        }
     }
 
     // 2. CORE 슬롯
     if (UpstreamConn* core = find_upstream(ctx, UpstreamKind::CORE))
     {
-        if (publish_to_upstream(core->mosq, "core", topic, msg))
+        if (publish_to_upstream(core->mosq, "core", topic, msg)) {
+            add_pending();
             return true;
+        }
     }
 
     // 3. BACKUP 슬롯
     if (UpstreamConn* bk = find_upstream(ctx, UpstreamKind::BACKUP))
     {
-        if (publish_to_upstream(bk->mosq, "backup core", topic, msg))
+        if (publish_to_upstream(bk->mosq, "backup core", topic, msg)) {
+            add_pending();
             return true;
+        }
     }
 
-    // 4. PEER_EDGE 슬롯들
+    // 4. PEER_EDGE 슬롯들 (relay/ack 미수신 경로이므로 pending 등록 없음)
     for (int i = 0; i < ctx->upstream_count; i++)
     {
         UpstreamConn& up = ctx->upstream_conns[i];
@@ -293,7 +313,7 @@ static bool forward_message_upstream(EdgeContext* ctx, const char* topic, const 
         }
     }
 
-    // 5. campus/relay/<relay_node_id> 폴백 (CORE mosq 존재 시, 기존 동작 유지)
+    // 5. campus/relay/<relay_node_id> 폴백 (CORE mosq 경유 → Core가 relay/ack 발행)
     if (ctx->relay_node_id[0] != '\0')
     {
         UpstreamConn* core = find_upstream_any(ctx, UpstreamKind::CORE);
@@ -301,8 +321,10 @@ static bool forward_message_upstream(EdgeContext* ctx, const char* topic, const 
         {
             char relay_topic[128];
             std::snprintf(relay_topic, sizeof(relay_topic), "campus/relay/%s", ctx->relay_node_id);
-            if (publish_to_upstream(core->mosq, "relay node", relay_topic, msg))
+            if (publish_to_upstream(core->mosq, "relay node", relay_topic, msg)) {
+                add_pending();
                 return true;
+            }
         }
     }
 
@@ -567,6 +589,7 @@ static void on_connect_upstream(struct mosquitto* mosq, void* userdata, int rc)
             mosquitto_subscribe(mosq, nullptr, ping_topic, 0);
             mosquitto_subscribe(mosq, nullptr, pong_topic, 0);
             mosquitto_subscribe(mosq, nullptr, relay_topic, 1);
+            mosquitto_subscribe(mosq, nullptr, "campus/relay/ack/#", 0);  // R-02 ACK 수신
         }
         publish_edge_status(mosq, ctx, "core");
         flush_store_queue(ctx);
@@ -578,6 +601,7 @@ static void on_connect_upstream(struct mosquitto* mosq, void* userdata, int rc)
         mosquitto_subscribe(mosq, nullptr, TOPIC_TOPOLOGY, 1);
         mosquitto_subscribe(mosq, nullptr, TOPIC_CORE_WILL_ALL, 1);
         mosquitto_subscribe(mosq, nullptr, "campus/alert/core_switch", 1);
+        mosquitto_subscribe(mosq, nullptr, "campus/relay/ack/#", 0);  // R-02 ACK 수신
         publish_edge_status(up.mosq, ctx, "backup core");
         flush_store_queue(ctx);
         break;
@@ -610,6 +634,20 @@ static void on_disconnect_upstream(struct mosquitto* /*mosq*/, void* userdata, i
                            (up.kind == UpstreamKind::BACKUP) ? "backup core" : "peer edge";
     std::printf("[edge] disconnected from %s (rc=%d)%s\n", kind_str, rc,
         rc != 0 ? " — waiting for reconnect" : "");
+
+    // CORE/BACKUP 연결 단절 시 pending_msgs → store_queue 앞에 재삽입 (H-3)
+    if (up.kind == UpstreamKind::CORE || up.kind == UpstreamKind::BACKUP)
+    {
+        std::lock_guard<std::mutex> plock(ctx->pending_mutex);
+        std::lock_guard<std::mutex> qlock(ctx->queue_mutex);
+        if (!ctx->pending_msgs.empty()) {
+            std::printf("[edge] %zu pending msg(s) moved back to store queue\n",
+                ctx->pending_msgs.size());
+            for (auto& [mid, evt] : ctx->pending_msgs)
+                ctx->store_queue.push_front(evt);
+            ctx->pending_msgs.clear();
+        }
+    }
 }
 
 // CT 메시지 처리 공통 로직 (CORE / PEER_EDGE 모두 사용)
@@ -657,9 +695,10 @@ static void handle_topology_message(struct mosquitto* /*mosq*/, void* userdata,
                     new_core_entry->ip, new_core_entry->port);
                 std::strncpy(ctx->active_core_ip, new_core_entry->ip, IP_LEN - 1);
                 ctx->active_core_port = new_core_entry->port;
+                core_slot->connected = false;
                 mosquitto_disconnect(core_slot->mosq);
                 mosquitto_connect_async(core_slot->mosq,
-                    ctx->active_core_ip, ctx->active_core_port, 60);
+                    ctx->active_core_ip, ctx->active_core_port, 10);
                 for (int i = 0; i < ctx->upstream_count; i++)
                     ctx->upstream_conns[i].preferred = false;
             }
@@ -691,6 +730,15 @@ static void on_message_upstream(struct mosquitto* mosq, void* userdata,
     if (std::strcmp(msg->topic, TOPIC_TOPOLOGY) == 0)
     {
         handle_topology_message(mosq, userdata, msg);
+        return;
+    }
+
+    // R-02: relay/ack 수신 → pending_msgs에서 해당 msg_id 제거
+    if (std::strncmp(msg->topic, TOPIC_RELAY_ACK_PREFIX, std::strlen(TOPIC_RELAY_ACK_PREFIX)) == 0)
+    {
+        const char* acked_id = msg->topic + std::strlen(TOPIC_RELAY_ACK_PREFIX);
+        std::lock_guard<std::mutex> lock(ctx->pending_mutex);
+        ctx->pending_msgs.erase(acked_id);
         return;
     }
 
@@ -740,8 +788,9 @@ static void on_message_upstream(struct mosquitto* mosq, void* userdata,
         UpstreamConn* core_slot = find_upstream_any(ctx, UpstreamKind::CORE);
         if (core_slot && core_slot->mosq)
         {
+            core_slot->connected = false;
             mosquitto_disconnect(core_slot->mosq);
-            mosquitto_connect_async(core_slot->mosq, ctx->active_core_ip, ctx->active_core_port, 60);
+            mosquitto_connect_async(core_slot->mosq, ctx->active_core_ip, ctx->active_core_port, 10);
         }
         for (int i = 0; i < ctx->upstream_count; i++)
             ctx->upstream_conns[i].preferred = false;
@@ -870,7 +919,7 @@ static void maybe_establish_peer_conn(EdgeContext* ctx, const std::string& peer_
     mosquitto_disconnect_callback_set(mosq_peer, on_disconnect_upstream);
 
     mosquitto_reconnect_delay_set(mosq_peer, 2, 30, false);
-    mosquitto_connect_async(mosq_peer, slot.ip, slot.port, 60);
+    mosquitto_connect_async(mosq_peer, slot.ip, slot.port, 10);
     mosquitto_loop_start(mosq_peer);
 
     std::printf("[edge] initiating peer connection to %s at %s:%u\n",
@@ -1230,7 +1279,7 @@ int main(int argc, char* argv[])
             mosquitto_lib_cleanup();
             return 1;
         }
-        int rc = mosquitto_connect(s0.mosq, s0.ip, s0.port, 60);
+        int rc = mosquitto_connect(s0.mosq, s0.ip, s0.port, 10);
         if (rc != MOSQ_ERR_SUCCESS)
         {
             std::fprintf(stderr, "[edge] connect to upstream[0] (%s:%d) failed: %s\n",
@@ -1251,7 +1300,7 @@ int main(int argc, char* argv[])
     {
         if (!ctx.upstream_conns[i].mosq) continue;
         UpstreamConn& s = ctx.upstream_conns[i];
-        int rc = mosquitto_connect_async(s.mosq, s.ip, s.port, 60);
+        int rc = mosquitto_connect_async(s.mosq, s.ip, s.port, 10);
         if (rc != MOSQ_ERR_SUCCESS)
         {
             std::fprintf(stderr, "[edge] connect_async to upstream[%d] (%s:%d) failed: %s\n",
