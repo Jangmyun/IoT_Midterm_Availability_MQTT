@@ -1,0 +1,107 @@
+================================================================
+  Rejoin 시연 시나리오 — 명령어 시퀀스
+  (Active 종료 → Backup 승격 → 원래 Active 재진입)
+================================================================
+
+고정 역할
+  A (혁민 Mac)    : 192.168.0.7:1883
+  B (라즈베리 Pi) : 192.168.0.8:1883
+  Edge            : 192.168.0.18:1883
+
+================================================================
+  STEP 0. 사전 준비 — 각 장비에서 mosquitto 실행 확인
+================================================================
+
+[A] mosquitto -v
+[B] mosquitto -v
+[Edge] mosquitto -v
+
+================================================================
+  STEP 1. 초기 기동 — Active + Backup + Edge 순서로 실행
+================================================================
+
+[A]    bash demo/presentation-hm-rpi1.sh active-core
+[B]    bash demo/presentation-hm-rpi1.sh backup-core
+[Edge] bash demo/presentation-hm-rpi1.sh edge 192.168.0.18 1883
+
+확인 로그:
+  [A] → "[core] XXXXXXXXX (ACTIVE) running on 192.168.0.7:1883"
+  [B] → "[core/backup] connected to active broker"
+        "[core/backup] merged active CT, ct.version=..."
+  [Edge] → "[edge] CT applied (version=..., nodes=3)"
+
+================================================================
+  STEP 2. 페일오버 — Active(A) 강제 종료
+================================================================
+
+[A]    Ctrl+C  (또는 kill -9 <pid>)
+
+확인 로그:
+  [B] → "[core/backup] active core down: ... — promoting self"
+        "[core/backup] core_switch sent on self broker: 192.168.0.8:1883"
+  [Edge] → "[edge] core down: ..."
+            "[edge] active_core_id changed → reconnect to 192.168.0.8:1883"
+            "[edge] connected to core"
+
+클라이언트 토폴로지:
+  A 노드 사라짐, B가 Active Core로 표시됨
+
+================================================================
+  STEP 3. 재진입 — A를 Backup으로 재기동 (핵심)
+================================================================
+
+[A]    bash demo/presentation-hm-rpi1.sh rejoin-as-backup
+  또는
+[A]    bash demo/presentation-hm-rpi1.sh rejoin-as-backup 192.168.0.8 1883
+
+  ※ 주의: backup-core 가 아닌 rejoin-as-backup 사용
+           backup-core 는 peer=192.168.0.7(자기 자신)로 연결되어 self-loop 발생
+
+확인 로그:
+  [A] → "[core] restored core_id from file: ..."
+        "[core] XXXXXXXXX (BACKUP) running on 192.168.0.7:1883"
+        "[core/backup] connected to active broker"
+        "[core/backup] merged active CT, ct.version=..."
+  [B] → "[core/active] merged backup nodes, ct.version=..."
+
+클라이언트 토폴로지:
+  A 노드 재등장, Backup Core로 표시됨
+
+================================================================
+  STEP 4. (선택) 순환 — 새 Active(B) 종료 후 A 재승격
+================================================================
+
+[B]    Ctrl+C
+
+확인 로그:
+  [A] → "[core/backup] active core down: ... — promoting self"
+        "[core/backup] core_switch sent on self broker: 192.168.0.7:1883"
+  [Edge] → "[edge] active_core_id changed → reconnect to 192.168.0.7:1883"
+
+[B]    bash demo/presentation-hm-rpi1.sh backup-core
+  ※ 이 경우 backup-core 사용 (B의 peer = A(192.168.0.7) = ACTIVE_HOST 기본값)
+
+확인 로그:
+  [B] → "[core] restored core_id from file: ..."
+        "[core] XXXXXXXXX (BACKUP) running on 192.168.0.8:1883"
+        "[core/backup] merged active CT, ct.version=..."
+
+클라이언트 토폴로지:
+  A가 Active Core, B가 Backup Core로 복원 → 최초 상태로 순환 완료
+
+================================================================
+  커맨드 요약
+================================================================
+
+상황                         | 종료된 머신 | 재기동 커맨드
+-----------------------------|-------------|----------------------------------
+A(원래 Active) 종료 후 재진입 | A           | rejoin-as-backup [192.168.0.8 1883]
+B(원래 Backup) 종료 후 재진입 | B           | backup-core
+
+================================================================
+  체크포인트
+================================================================
+
+□ rejoin 후 클라이언트 토폴로지 그래프에 두 Core 모두 표시되는가
+□ CT version 이 rejoin 전보다 증가했는가 (active-sub 에서 확인)
+□ Edge 이벤트 발행이 새 Active 로 정상 전달되는가
