@@ -574,6 +574,10 @@ static void on_connect_upstream(struct mosquitto* mosq, void* userdata, int rc)
 
     case UpstreamKind::BACKUP:
         std::printf("[edge] connected to backup core\n");
+        // backup이 active가 된 이후에도 edge가 재기동하면 CT를 backup 경로에서 학습할 수 있어야 한다.
+        mosquitto_subscribe(mosq, nullptr, TOPIC_TOPOLOGY, 1);
+        mosquitto_subscribe(mosq, nullptr, TOPIC_CORE_WILL_ALL, 1);
+        mosquitto_subscribe(mosq, nullptr, "campus/alert/core_switch", 1);
         publish_edge_status(up.mosq, ctx, "backup core");
         flush_store_queue(ctx);
         break;
@@ -702,8 +706,8 @@ static void on_message_upstream(struct mosquitto* mosq, void* userdata,
         return;
     }
 
-    // 이하 제어 메시지는 CORE 슬롯에서만 처리
-    if (up.kind != UpstreamKind::CORE)
+    // 이하 제어 메시지는 CORE 또는 BACKUP 슬롯에서 처리 (backup이 active로 전환 시 대응)
+    if (up.kind != UpstreamKind::CORE && up.kind != UpstreamKind::BACKUP)
         return;
 
     // campus/alert/core_switch 수신: 새 Active Core로 명시적 재연결 (FR-05, FR-10)

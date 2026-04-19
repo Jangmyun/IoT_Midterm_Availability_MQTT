@@ -45,6 +45,7 @@ Usage: ./test/test_pub.sh <case>
   edge_store_forward
   edge_stable_node_id
   edge_peer_relay
+  edge_failover_rejoin
 
   [publisher] publisher failover 검증 (pytest 필요):
     publisher_failover
@@ -99,6 +100,7 @@ edge/rtt_relay
 edge/store_forward
 edge/stable_node_id
 edge/peer_relay
+edge/failover_rejoin
 publisher/failover
 EOF
 }
@@ -156,6 +158,7 @@ run_all_edge() {
   try_run_binary_test "$SCRIPT_DIR/edge/06_store_and_forward.sh"      "edge/06_store_and_forward"
   try_run_binary_test "$SCRIPT_DIR/edge/07_stable_node_id.sh"         "edge/07_stable_node_id"
   try_run_binary_test "$SCRIPT_DIR/edge/08_peer_relay.sh"             "edge/08_peer_relay"
+  try_run_binary_test "$SCRIPT_DIR/edge/08_failover_rejoin.sh"        "edge/08_failover_rejoin"
   printf '[test] all_edge completed\n'
 }
 
@@ -200,6 +203,7 @@ case "${1:-help}" in
   edge_store_forward)          exec "$SCRIPT_DIR/edge/06_store_and_forward.sh" ;;
   edge_stable_node_id)         exec "$SCRIPT_DIR/edge/07_stable_node_id.sh" ;;
   edge_peer_relay)             exec "$SCRIPT_DIR/edge/08_peer_relay.sh" ;;
+  edge_failover_rejoin)        exec "$SCRIPT_DIR/edge/08_failover_rejoin.sh" ;;
   # publisher
   publisher_failover)          exec "$SCRIPT_DIR/publisher/01_failover.sh" ;;
   # 전체 실행

@@ -19,6 +19,7 @@ core_broker도 함께 실행하여 실제 연동 흐름을 검증합니다.
 | EDGE-04 | `04_ct_active_core_change.sh` | topology의 `active_core_id` 변경 수신 → edge가 새 Core IP:Port로 재연결 |
 | EDGE-05 | `05_rtt_relay.sh` | Edge 2대 등록 → Ping/Pong RTT 계산 → relay node 선택 + peer OFFLINE 전파 확인 |
 | EDGE-06 | `06_store_and_forward.sh` | upstream broker 단절 중 로컬 이벤트 큐 저장 → 재연결 후 queued event flush |
+| EDGE-08 | `08_failover_rejoin.sh` | Active Core failover 후 edge 재기동 → backup CT로 promoted active 재학습 → 이벤트 전달 유지 |
 
 ## 테스트 흐름
 
@@ -48,6 +49,7 @@ BUILD_DIR=./broker/build ./test/test_pub.sh edge_ping_pong
 BUILD_DIR=./broker/build ./test/test_pub.sh edge_lwt
 BUILD_DIR=./broker/build ./test/test_pub.sh edge_rtt_relay
 BUILD_DIR=./broker/build ./test/test_pub.sh edge_store_forward
+BUILD_DIR=./broker/build ./test/test_pub.sh edge_failover_rejoin
 
 # 전체
 BUILD_DIR=./broker/build ./test/test_pub.sh all_edge
