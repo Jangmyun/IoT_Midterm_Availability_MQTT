@@ -20,6 +20,7 @@
 #include "connection_table.h"
 #include "connection_table_manager.h"
 #include "message.h"
+#include "mqtt_json.h"
 
 // campus/data/ 토픽 prefix (파싱 기준점)
 static constexpr const char* EDGE_DATA_TOPIC_PREFIX = "campus/data/";
@@ -91,6 +92,33 @@ inline void parse_building_camera(const char* topic,
     size_t part_len = (size_t)(slash - rest);
     std::snprintf(building, building_len, "%.*s", (int)part_len, rest);
     std::snprintf(camera,   camera_len,   "%s",   slash + 1);
+}
+
+// nested publisher MqttMessage JSON에서 "원래 소속 edge"를 나타내는 route.original_node를 추출한다.
+// publisher 기본값은 route.original_node == source.id 이므로, 두 값이 다를 때만 origin edge override로 간주한다.
+inline bool extract_nested_event_origin_node(const std::string& payload,
+                                             char* out, size_t out_len)
+{
+    if (!out || out_len == 0)
+        return false;
+
+    out[0] = '\0';
+    if (payload.empty())
+        return false;
+
+    MqttMessage nested = {};
+    if (!mqtt_message_from_json(payload, nested))
+        return false;
+
+    if (nested.route.original_node[0] == '\0')
+        return false;
+
+    if (nested.source.id[0] != '\0' &&
+        std::strncmp(nested.route.original_node, nested.source.id, UUID_LEN) == 0)
+        return false;
+
+    std::snprintf(out, out_len, "%s", nested.route.original_node);
+    return true;
 }
 
 // RTT + hop_to_core 기반 최적 Relay Node UUID 반환 (FR-08, 시나리오 5.6)

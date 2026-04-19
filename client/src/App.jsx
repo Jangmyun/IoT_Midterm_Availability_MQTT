@@ -9,7 +9,12 @@ import {
   getEventPresentation,
   shortId,
 } from './mqtt/eventPresentation.js';
-import { buildNodePresentationMap, getNodeAliasKey, resolveNodeAlias } from './mqtt/nodePresentation.js';
+import {
+  buildAutoNodeAliases,
+  buildNodePresentationMap,
+  getNodeAliasKey,
+  resolveNodeAlias,
+} from './mqtt/nodePresentation.js';
 import './App.css';
 
 const NODE_ALIAS_STORAGE_KEY = 'monitor-node-aliases';
@@ -118,7 +123,6 @@ export default function App() {
   const [nodeAliases, setNodeAliases] = useState(loadNodeAliases);
   const [isAliasModalOpen, setIsAliasModalOpen] = useState(false);
   const [aliasDrafts, setAliasDrafts] = useState({});
-  const seenEdgeAliasKeysRef = useRef(new Set());
 
   useEffect(() => {
     setUrlInput(brokerUrl);
@@ -135,7 +139,9 @@ export default function App() {
   // 노드 선택 state
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const selectedNode = topology?.nodes.find(n => n.id === selectedNodeId) ?? null;
-  const nodeDisplayMap = buildNodePresentationMap(topology, nodeAliases);
+  const autoNodeAliases = buildAutoNodeAliases(topology, events);
+  const effectiveNodeAliases = { ...autoNodeAliases, ...nodeAliases };
+  const nodeDisplayMap = buildNodePresentationMap(topology, effectiveNodeAliases);
   const selectedNodeDisplay = selectedNode ? nodeDisplayMap.get(selectedNode.id) ?? null : null;
   const edgeNodes = (topology?.nodes ?? [])
     .filter(node => node.role !== 'CORE')
@@ -154,15 +160,19 @@ export default function App() {
 
   // 필터 옵션 (수신된 events에서 동적 추출)
   const nodeById = new Map((topology?.nodes ?? []).map(node => [node.id, node]));
+  const eventViews = new Map(events.map(event => [event.msg_id, getEventPresentation(event, nodeById, nodeDisplayMap)]));
   const eventTypes = ['ALL', ...new Set(events.map(e => e.type).filter(Boolean))];
   const buildings  = ['ALL', ...new Set(events.map(e => e.payload?.building_id).filter(Boolean))];
-  const sourceNodes = ['ALL', ...new Set(events.map(e => e.source?.id).filter(Boolean))];
+  const sourceNodes = ['ALL', ...new Set(
+    [...eventViews.values()].map(view => view.sourceId).filter(Boolean)
+  )];
 
   // 필터 적용
   const filteredEvents = events.filter(e => {
+    const eventView = eventViews.get(e.msg_id);
     if (filterType     !== 'ALL' && e.type                  !== filterType)     return false;
     if (filterBuilding !== 'ALL' && e.payload?.building_id  !== filterBuilding) return false;
-    if (filterSourceId !== 'ALL' && e.source?.id            !== filterSourceId) return false;
+    if (filterSourceId !== 'ALL' && eventView?.sourceId     !== filterSourceId) return false;
     if (filterHighOnly && e.priority !== 'HIGH')                                return false;
     return true;
   });
@@ -224,27 +234,6 @@ export default function App() {
       return nextDrafts;
     });
   }, [isAliasModalOpen, edgeNodeIdsKey, nodeAliases]);
-
-  useEffect(() => {
-    if (edgeNodes.length === 0) return;
-
-    const unseenKeys = edgeNodes
-      .map(node => getNodeAliasKey(node))
-      .filter(aliasKey => aliasKey && !seenEdgeAliasKeysRef.current.has(aliasKey));
-
-    if (unseenKeys.length === 0) return;
-
-    unseenKeys.forEach(aliasKey => seenEdgeAliasKeysRef.current.add(aliasKey));
-
-    const hasUnnamedEdge = edgeNodes.some((node) => {
-      const aliasKey = getNodeAliasKey(node);
-      return unseenKeys.includes(aliasKey) && !resolveNodeAlias(node, nodeAliases);
-    });
-
-    if (hasUnnamedEdge) {
-      openAliasModal();
-    }
-  }, [edgeNodeIdsKey, nodeAliases]);
 
   useEffect(() => {
     if (!isAliasModalOpen) return undefined;
@@ -368,11 +357,11 @@ export default function App() {
 
       {/* ── Cytoscape 토폴로지 그래프 ─────────────────────────── */}
       <section className="graph-section">
-        <div className="section-header">
-          <h2>Topology{selectedNode ? ` — ${selectedNodeDisplay?.listLabel ?? selectedNode.id.slice(0, 8)}` : ''}</h2>
+          <div className="section-header">
+            <h2>Topology{selectedNode ? ` — ${selectedNodeDisplay?.listLabel ?? selectedNode.id.slice(0, 8)}` : ''}</h2>
           {edgeNodes.length > 0 && (
             <button type="button" className="section-btn" onClick={openAliasModal}>
-              Name Edges
+              Edit Labels
             </button>
           )}
         </div>
@@ -496,7 +485,7 @@ export default function App() {
               <li className="empty">필터 조건에 맞는 이벤트 없음</li>
             )}
             {filteredEvents.map(e => {
-              const eventView = getEventPresentation(e, nodeById, nodeDisplayMap);
+              const eventView = eventViews.get(e.msg_id) ?? getEventPresentation(e, nodeById, nodeDisplayMap);
 
               return (
                 <li key={e.msg_id}>
@@ -531,8 +520,11 @@ export default function App() {
                       )}
                       {e._buffered && <span>received {formatClockTime(e._receivedAt)}</span>}
                       {e._buffered && <span>{formatDelayLabel(e._delayMs)}</span>}
-                      {eventView.viaFailover && eventView.intendedEdgeLabel && (
-                        <span className="via-info">→ {eventView.intendedEdgeLabel} 대신 우회</span>
+                      {eventView.viaFailover && eventView.transitEdgeLabel && (
+                        <span className="via-info">
+                          via {eventView.transitEdgeLabel}
+                          {eventView.actualSourceEndpoint ? ` · ${eventView.actualSourceEndpoint}` : ''}
+                        </span>
                       )}
                       {eventView.wasQueued && eventView.queueDelayMs > 1000 && (
                         <span>{formatDelayLabel(eventView.queueDelayMs)} 지연 도착</span>
@@ -561,7 +553,7 @@ export default function App() {
               <div>
                 <h2 id="edge-alias-modal-title">Edge Labels</h2>
                 <p className="alias-modal-subtitle">
-                  Give each edge a demo-friendly name. Edge numbers stay fixed and the labels will appear in the graph and event log.
+                  Publisher building and camera values are used automatically. Add a manual label here only if you want to override it for the demo.
                 </p>
               </div>
               <button type="button" className="alias-modal-close" onClick={closeAliasModal}>✕</button>

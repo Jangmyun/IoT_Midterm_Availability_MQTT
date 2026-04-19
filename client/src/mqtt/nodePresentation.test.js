@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildNodePresentationMap, getNodeAliasKey, resolveNodeAlias } from './nodePresentation.js';
+import {
+  buildAutoNodeAliases,
+  buildNodePresentationMap,
+  getNodeAliasKey,
+  resolveEventNodeId,
+  resolveNodeAlias,
+} from './nodePresentation.js';
 
 test('buildNodePresentationMap assigns edge numbers ordered by endpoint', () => {
   const topology = {
@@ -67,5 +73,68 @@ test('resolveNodeAlias prefers endpoint alias and falls back to legacy id alias'
       { 'edge-a': 'Legacy Name' },
     ),
     'Legacy Name',
+  );
+});
+
+test('buildAutoNodeAliases uses building_id from latest event for each edge endpoint', () => {
+  const topology = {
+    nodes: [
+      { id: 'edge-a', role: 'NODE', ip: '192.168.0.9', port: 1883 },
+      { id: 'edge-b', role: 'NODE', ip: '192.168.0.16', port: 1883 },
+    ],
+  };
+
+  const aliases = buildAutoNodeAliases(topology, [
+    {
+      source: { id: 'edge-a' },
+      route: { original_node: 'edge-a' },
+      payload: { building_id: 'Newton 4F', camera_id: 'cam-01' },
+    },
+    {
+      source: { id: 'edge-b' },
+      route: { original_node: 'edge-b' },
+      payload: { building_id: 'Newton 3F', camera_id: 'cam-02' },
+    },
+  ]);
+
+  assert.equal(aliases['192.168.0.9:1883'], 'Newton 4F');
+  assert.equal(aliases['192.168.0.16:1883'], 'Newton 3F');
+});
+
+test('buildAutoNodeAliases prefers route.original_node so failover does not relabel relay edge', () => {
+  const topology = {
+    nodes: [
+      { id: 'edge-a', role: 'NODE', ip: '192.168.0.9', port: 1883 },
+      { id: 'edge-b', role: 'NODE', ip: '192.168.0.16', port: 1883 },
+    ],
+  };
+
+  const aliases = buildAutoNodeAliases(topology, [
+    {
+      source: { id: 'edge-b' },
+      route: { original_node: 'edge-a' },
+      payload: { building_id: 'Newton 4F', camera_id: 'cam-01' },
+    },
+  ]);
+
+  assert.equal(aliases['192.168.0.9:1883'], 'Newton 4F');
+  assert.equal(aliases['192.168.0.16:1883'], undefined);
+});
+
+test('resolveEventNodeId prefers route.original_node and falls back to source.id', () => {
+  assert.equal(
+    resolveEventNodeId({
+      source: { id: 'relay-edge' },
+      route: { original_node: 'origin-edge' },
+    }),
+    'origin-edge',
+  );
+
+  assert.equal(
+    resolveEventNodeId({
+      source: { id: 'relay-edge' },
+      route: { original_node: '' },
+    }),
+    'relay-edge',
   );
 });

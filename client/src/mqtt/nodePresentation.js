@@ -37,6 +37,24 @@ function normalizeAlias(alias) {
   return typeof alias === 'string' ? alias.trim() : '';
 }
 
+export function formatEdgeLocationAlias(buildingId, cameraId) {
+  const building = typeof buildingId === 'string' ? buildingId.trim() : '';
+  const camera = typeof cameraId === 'string' ? cameraId.trim() : '';
+
+  if (building) return building;
+  if (camera) return camera;
+  return '';
+}
+
+export function resolveEventNodeId(event) {
+  const originalNode = typeof event?.route?.original_node === 'string'
+    ? event.route.original_node.trim()
+    : '';
+  if (originalNode) return originalNode;
+
+  return typeof event?.source?.id === 'string' ? event.source.id : '';
+}
+
 export function getNodeAliasKey(node) {
   if (!node) return '';
   if (node.ip) return `${node.ip}:${node.port ?? ''}`;
@@ -47,6 +65,30 @@ export function resolveNodeAlias(node, aliases = {}) {
   if (!node) return '';
   const key = getNodeAliasKey(node);
   return normalizeAlias(aliases[key]) || normalizeAlias(aliases[node.id]);
+}
+
+export function buildAutoNodeAliases(topology, events = []) {
+  const aliases = {};
+  const nodes = Array.isArray(topology?.nodes) ? topology.nodes : [];
+  const nodeById = new Map(nodes.map(node => [String(node.id), node]));
+
+  for (const event of events) {
+    const nodeId = resolveEventNodeId(event);
+    if (!nodeId) continue;
+
+    const alias = formatEdgeLocationAlias(event?.payload?.building_id, event?.payload?.camera_id);
+    if (!alias) continue;
+
+    const node = nodeById.get(nodeId);
+    if (node) {
+      const endpointKey = getNodeAliasKey(node);
+      if (endpointKey && !aliases[endpointKey]) aliases[endpointKey] = alias;
+    }
+
+    if (!aliases[nodeId]) aliases[nodeId] = alias;
+  }
+
+  return aliases;
 }
 
 export function buildNodePresentationMap(topology, aliases = {}) {

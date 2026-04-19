@@ -23,6 +23,19 @@ function stableHash(input) {
   return hash >>> 0;
 }
 
+function normalizeNodeId(value) {
+  return String(value ?? '');
+}
+
+function isFinitePositiveRtt(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function average(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
 export function classifyTopologyNode(topology, node) {
   if (!topology || !node?.id) return 'node';
 
@@ -117,12 +130,20 @@ export function buildTopologyNodePositions(topology, nodes) {
 export function classifyTopologyLink(topology, link) {
   if (!topology || !link) return 'default-link';
 
-  const fromId = String(link.from_id ?? '');
-  const toId = String(link.to_id ?? '');
+  const fromId = normalizeNodeId(link.from_id);
+  const toId = normalizeNodeId(link.to_id);
   const roleMap = buildRoleMap(topology.nodes);
 
   const fromRole = roleMap.get(fromId) ?? 'NODE';
   const toRole = roleMap.get(toId) ?? 'NODE';
+
+  if (fromRole === 'CORE' && toRole === 'CORE') {
+    return 'core-peer-link';
+  }
+
+  if (fromRole !== 'CORE' && toRole !== 'CORE') {
+    return 'peer-link';
+  }
 
   const connectsCoreToNode = (coreId) => {
     if (!coreId) return false;
@@ -142,4 +163,70 @@ export function classifyTopologyLink(topology, link) {
   }
 
   return 'default-link';
+}
+
+export function formatTopologyLinkRtt(rttMs) {
+  if (!isFinitePositiveRtt(rttMs)) return '';
+  if (rttMs < 1) return `${rttMs.toFixed(2)} ms`;
+  if (rttMs < 10) return `${rttMs.toFixed(1)} ms`;
+  return `${Math.round(rttMs)} ms`;
+}
+
+function normalizeLinkDirection(fromId, toId, topology) {
+  const roleMap = buildRoleMap(topology?.nodes);
+  const fromRole = roleMap.get(fromId) ?? 'NODE';
+  const toRole = roleMap.get(toId) ?? 'NODE';
+
+  if (fromRole === 'CORE' && toRole !== 'CORE') return [fromId, toId];
+  if (toRole === 'CORE' && fromRole !== 'CORE') return [toId, fromId];
+  return fromId.localeCompare(toId) <= 0 ? [fromId, toId] : [toId, fromId];
+}
+
+export function buildTopologyGraphLinks(topology, visibleNodes = []) {
+  if (!topology || !Array.isArray(topology.links)) return [];
+
+  const nodeIds = new Set(
+    (Array.isArray(visibleNodes) && visibleNodes.length > 0 ? visibleNodes : topology.nodes ?? [])
+      .map(node => normalizeNodeId(node?.id))
+      .filter(Boolean),
+  );
+
+  const aggregated = new Map();
+
+  for (const link of topology.links) {
+    const rawFromId = normalizeNodeId(link?.from_id);
+    const rawToId = normalizeNodeId(link?.to_id);
+
+    if (!rawFromId || !rawToId || rawFromId === rawToId) continue;
+    if (!nodeIds.has(rawFromId) || !nodeIds.has(rawToId)) continue;
+
+    const [fromId, toId] = normalizeLinkDirection(rawFromId, rawToId, topology);
+    const key = `${fromId}->${toId}`;
+    const existing = aggregated.get(key) ?? {
+      from_id: fromId,
+      to_id: toId,
+      rttValues: [],
+    };
+
+    if (isFinitePositiveRtt(link.rtt_ms)) {
+      existing.rttValues.push(link.rtt_ms);
+    }
+
+    aggregated.set(key, existing);
+  }
+
+  return [...aggregated.values()].map((entry) => {
+    const averagedRtt = average(entry.rttValues);
+    const resolvedLink = {
+      from_id: entry.from_id,
+      to_id: entry.to_id,
+      rtt_ms: averagedRtt,
+    };
+
+    return {
+      ...resolvedLink,
+      rttLabel: formatTopologyLinkRtt(averagedRtt),
+      edgeKind: classifyTopologyLink(topology, resolvedLink),
+    };
+  });
 }

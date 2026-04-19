@@ -22,6 +22,8 @@ test('parseNestedPublisherMessage extracts publisher metadata from nested JSON p
     publisherId:    PUBLISHER_ID,
     description:    'Camera auto-detect',
     viaFailover:    false,
+    originalEdgeId: '',
+    originalEdgeIp: '',
     intendedEdgeIp: '',
     wasQueued:      false,
     createdAt:      '',
@@ -55,9 +57,11 @@ test('getEventPresentation resolves source edge and readable location details', 
 
   assert.deepEqual(getEventPresentation(event, nodeById, nodeDisplayMap), {
     sourceId: EDGE_ID,
+    actualSourceId: EDGE_ID,
     sourceIp: '192.168.0.9',
     sourcePort: '1883',
     sourceEndpoint: '192.168.0.9:1883',
+    actualSourceEndpoint: '192.168.0.9:1883',
     edgeLabel: 'EDGE 1',
     sourceTitle: 'Engineering Hall',
     sourceAlias: 'Engineering Hall',
@@ -66,6 +70,7 @@ test('getEventPresentation resolves source edge and readable location details', 
     publisherId: PUBLISHER_ID,
     viaFailover:      false,
     intendedEdgeLabel: '',
+    transitEdgeLabel: '',
     wasQueued:        false,
     queueDelayMs:     0,
   });
@@ -91,7 +96,7 @@ test('formatDelayLabel renders readable delayed-delivery text', () => {
 const INTENDED_EDGE_ID = '77777777-aaaa-4bbb-8ccc-000000000001';
 const INTENDED_IP = '192.168.0.8';
 
-test('getEventPresentation resolves intendedEdgeLabel from via_failover metadata', () => {
+test('getEventPresentation prefers route.original_node for failover display and keeps transit edge info', () => {
   const nodeById = new Map([
     [EDGE_ID,         { id: EDGE_ID,         ip: '192.168.0.9', port: 1883 }],
     [INTENDED_EDGE_ID,{ id: INTENDED_EDGE_ID, ip: INTENDED_IP,  port: 1883 }],
@@ -104,6 +109,7 @@ test('getEventPresentation resolves intendedEdgeLabel from via_failover metadata
   const event = {
     timestamp: '2026-04-18T14:04:52Z',
     source: { id: EDGE_ID },
+    route: { original_node: INTENDED_EDGE_ID },
     payload: {
       building_id: 'b',
       camera_id:   'c',
@@ -117,8 +123,13 @@ test('getEventPresentation resolves intendedEdgeLabel from via_failover metadata
   };
 
   const result = getEventPresentation(event, nodeById, nodeDisplayMap);
+  assert.equal(result.sourceId, INTENDED_EDGE_ID);
   assert.equal(result.viaFailover, true);
   assert.equal(result.intendedEdgeLabel, 'EDGE 1');
+  assert.equal(result.edgeLabel, 'EDGE 1');
+  assert.equal(result.transitEdgeLabel, 'EDGE 2');
+  assert.equal(result.sourceEndpoint, '192.168.0.8:1883');
+  assert.equal(result.actualSourceEndpoint, '192.168.0.9:1883');
 });
 
 test('getEventPresentation calculates queueDelayMs when was_queued is true', () => {
@@ -147,4 +158,21 @@ test('getEventPresentation calculates queueDelayMs when was_queued is true', () 
   const result = getEventPresentation(event, nodeById, nodeDisplayMap);
   assert.equal(result.wasQueued, true);
   assert.equal(result.queueDelayMs, 30000);
+});
+
+test('getEventPresentation falls back to building_id when no topology alias is available', () => {
+  const event = {
+    timestamp: '2026-04-18T14:05:02Z',
+    source: { id: 'missing-edge' },
+    route: { original_node: 'missing-edge' },
+    payload: {
+      building_id: 'Newton 4F',
+      camera_id: 'cam-01',
+      description: '',
+    },
+  };
+
+  const result = getEventPresentation(event, new Map(), new Map());
+  assert.equal(result.sourceTitle, 'Newton 4F');
+  assert.equal(result.locationLabel, 'Newton 4F / cam-01');
 });

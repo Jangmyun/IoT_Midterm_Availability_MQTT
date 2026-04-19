@@ -230,7 +230,20 @@ static void attempt_return_to_primary(PubContext* ctx)
 
 static void try_resolve_primary_edge_id(PubContext* ctx, const ConnectionTable& ct)
 {
-    if (ctx->primary_edge_id[0] != '\0') return;  // already resolved
+    if (ctx->primary_edge_id[0] != '\0')
+    {
+        for (int i = 0; i < ct.node_count; i++)
+        {
+            const NodeEntry& n = ct.nodes[i];
+            if (std::strncmp(n.id, ctx->primary_edge_id, UUID_LEN) == 0 &&
+                n.role == NODE_ROLE_NODE &&
+                std::strncmp(n.ip, ctx->primary_ip, IP_LEN) == 0 &&
+                n.port == (uint16_t)ctx->primary_port)
+            {
+                return;
+            }
+        }
+    }
 
     for (int i = 0; i < ct.node_count; i++)
     {
@@ -455,6 +468,11 @@ int main(int argc, char* argv[])
                                   cfg.building_id, cfg.camera_id,
                                   cfg.description, cfg.qos, &msg)) {
             continue;
+        }
+
+        if (ctx.primary_edge_id[0] != '\0') {
+            std::strncpy(msg.route.original_node, ctx.primary_edge_id, UUID_LEN - 1);
+            msg.route.original_node[UUID_LEN - 1] = '\0';
         }
 
         char topic[256];

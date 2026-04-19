@@ -89,6 +89,12 @@ export function usePublisher() {
     cachedCoreUrlRef.current = buildBrokerUrl(preferredCore.ip);
   }, [buildBrokerUrl]);
 
+  const applyOriginRoute = useCallback((msg) => {
+    if (!msg?.route || !primaryEdgeIdRef.current) return msg;
+    msg.route.original_node = primaryEdgeIdRef.current;
+    return msg;
+  }, []);
+
   const flushQueue = useCallback(() => {
     const client = clientRef.current;
     if (!client?.connected || queueRef.current.length === 0) return;
@@ -101,6 +107,7 @@ export function usePublisher() {
       let sendPayload = item.payload;
       try {
         const parsedMsg = JSON.parse(item.payload);
+        applyOriginRoute(parsedMsg);
         parsedMsg.was_queued = true;
         if (isDeliveringViaFallback()) {
           parsedMsg.via_failover = true;
@@ -126,7 +133,7 @@ export function usePublisher() {
         });
       });
     });
-  }, [isDeliveringViaFallback, setQueueSizeFromRef, upsertEvent]);
+  }, [applyOriginRoute, isDeliveringViaFallback, setQueueSizeFromRef, upsertEvent]);
 
   // 단일 URL로 MQTT 연결 + CT 구독
   const connectToBroker = useCallback((brokerUrl) => {
@@ -237,8 +244,11 @@ export function usePublisher() {
     setCtReceived(true);
     rememberPreferredCore(ct);
 
-    if (!primaryEdgeIdRef.current && primaryIpRef.current) {
-      primaryEdgeIdRef.current = resolvePrimaryEdgeId(ct, primaryIpRef.current);
+    if (primaryIpRef.current) {
+      const resolvedPrimaryEdgeId = resolvePrimaryEdgeId(ct, primaryIpRef.current);
+      if (resolvedPrimaryEdgeId) {
+        primaryEdgeIdRef.current = resolvedPrimaryEdgeId;
+      }
     }
 
     if (onFallbackRef.current && primaryEdgeIdRef.current) {
@@ -326,6 +336,7 @@ export function usePublisher() {
 
     try {
       msg = buildMessage({ publisherId, type, buildingId, cameraId, description, qos: 1 });
+      applyOriginRoute(msg);
       topic = buildTopic(type, buildingId, cameraId);
     } catch {
       return false;
@@ -371,7 +382,7 @@ export function usePublisher() {
     });
 
     return true;
-  }, [attemptFailover, isDeliveringViaFallback, queuePublish, status, upsertEvent]);
+  }, [applyOriginRoute, attemptFailover, isDeliveringViaFallback, queuePublish, status, upsertEvent]);
 
   useEffect(() => () => {
     manualDisconnectRef.current = true;

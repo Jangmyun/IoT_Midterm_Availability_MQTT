@@ -5,8 +5,12 @@ function normalizeDescription(rawDescription) {
   if (!trimmed) return '';
   if (trimmed === 'auto-detect') return 'Camera auto-detect';
   if (trimmed === 'manual') return 'Manual trigger';
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) return '';
+  if (trimmed.startsWith('{')) return '';
   return trimmed;
+}
+
+function normalizeLocationText(value) {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function safeParseJson(raw) {
@@ -73,10 +77,33 @@ export function parseNestedPublisherMessage(rawDescription) {
     publisherId:    typeof parsed.source?.id === 'string' ? parsed.source.id : '',
     description:    normalizeDescription(parsed.payload?.description),
     viaFailover:    parsed.via_failover ?? false,
+    originalEdgeId: typeof parsed.original_edge_id === 'string'
+      ? parsed.original_edge_id
+      : (typeof parsed.intended_edge_id === 'string' ? parsed.intended_edge_id : ''),
+    originalEdgeIp: typeof parsed.original_edge_ip === 'string'
+      ? parsed.original_edge_ip
+      : (typeof parsed.intended_edge_ip === 'string' ? parsed.intended_edge_ip : ''),
     intendedEdgeIp: typeof parsed.intended_edge_ip === 'string' ? parsed.intended_edge_ip : '',
     wasQueued:      parsed.was_queued ?? false,
     createdAt:      typeof parsed.created_at === 'string' ? parsed.created_at : '',
   };
+}
+
+function findNodeByIp(nodeById, ip) {
+  if (!ip || !nodeById) return null;
+
+  for (const node of nodeById.values()) {
+    if (node.ip === ip) return node;
+  }
+
+  return null;
+}
+
+function buildEdgeLabel(nodeId, node, nodeDisplayMap, fallbackIp = '') {
+  const display = nodeId ? nodeDisplayMap?.get(nodeId) ?? null : null;
+  if (display?.edgeLabel) return display.edgeLabel;
+  if (fallbackIp || node?.ip) return `EDGE ${fallbackIp || node.ip}`;
+  return nodeId ? shortId(nodeId) : 'EDGE';
 }
 
 export function formatEventSourceOption(nodeId, node, nodeDisplayMap) {
@@ -89,23 +116,42 @@ export function formatEventSourceOption(nodeId, node, nodeDisplayMap) {
 }
 
 export function getEventPresentation(event, nodeById, nodeDisplayMap) {
-  const sourceId = event?.source?.id ?? '';
-  const sourceNode = sourceId ? nodeById?.get(sourceId) ?? null : null;
-  const sourceDisplay = sourceId ? nodeDisplayMap?.get(sourceId) ?? null : null;
+  const actualSourceId = event?.source?.id ?? '';
+  const actualSourceNode = actualSourceId ? nodeById?.get(actualSourceId) ?? null : null;
+  const actualSourceDisplay = actualSourceId ? nodeDisplayMap?.get(actualSourceId) ?? null : null;
   const nested = parseNestedPublisherMessage(event?.payload?.description);
   const buildingId = event?.payload?.building_id ?? '';
   const cameraId = event?.payload?.camera_id ?? '';
+  const routeOriginalId = typeof event?.route?.original_node === 'string' ? event.route.original_node : '';
 
   const locationLabel = [buildingId, cameraId].filter(Boolean).join(' / ') || 'Location unavailable';
-  const sourceIp = sourceNode?.ip ?? '';
-  const sourcePort = sourceNode?.port ? String(sourceNode.port) : '';
+  const automaticSourceLabel = normalizeLocationText(buildingId) || normalizeLocationText(cameraId);
+  const routeOriginalNode =
+    routeOriginalId && routeOriginalId !== actualSourceId
+      ? nodeById?.get(routeOriginalId) ?? null
+      : null;
+  const metadataOriginalNode =
+    !routeOriginalNode && nested?.originalEdgeId && nested.originalEdgeId !== actualSourceId
+      ? nodeById?.get(nested.originalEdgeId) ?? null
+      : null;
+  const metadataOriginalIpNode =
+    !routeOriginalNode && !metadataOriginalNode && nested?.originalEdgeIp
+      ? findNodeByIp(nodeById, nested.originalEdgeIp)
+      : null;
 
-  let intendedEdgeLabel = '';
-  if (nested?.viaFailover && nested?.intendedEdgeIp) {
-    const intendedNode = [...(nodeById?.values() ?? [])].find(n => n.ip === nested.intendedEdgeIp);
-    const intendedDisplay = intendedNode ? nodeDisplayMap?.get(intendedNode.id) : null;
-    intendedEdgeLabel = intendedDisplay?.edgeLabel ?? nested.intendedEdgeIp;
-  }
+  const displaySourceNode = routeOriginalNode ?? metadataOriginalNode ?? metadataOriginalIpNode ?? actualSourceNode;
+  const hintedSourceId = routeOriginalId || nested?.originalEdgeId || actualSourceId;
+  const displaySourceId = displaySourceNode?.id ?? hintedSourceId;
+  const displaySourceDisplay = displaySourceId ? nodeDisplayMap?.get(displaySourceId) ?? null : null;
+  const sourceIp = displaySourceNode?.ip ?? nested?.originalEdgeIp ?? '';
+  const sourcePort = displaySourceNode?.port ? String(displaySourceNode.port) : '';
+  const sourceEndpoint = sourceIp ? `${sourceIp}${sourcePort ? `:${sourcePort}` : ''}` : '';
+  const actualSourceIp = actualSourceNode?.ip ?? '';
+  const actualSourcePort = actualSourceNode?.port ? String(actualSourceNode.port) : '';
+  const actualSourceEndpoint = actualSourceIp
+    ? `${actualSourceIp}${actualSourcePort ? `:${actualSourcePort}` : ''}`
+    : '';
+  const viaDifferentNode = Boolean(displaySourceId && actualSourceId && displaySourceId !== actualSourceId);
 
   let queueDelayMs = 0;
   if (nested?.wasQueued && nested?.createdAt && event?.timestamp) {
@@ -115,18 +161,25 @@ export function getEventPresentation(event, nodeById, nodeDisplayMap) {
   }
 
   return {
-    sourceId,
+    sourceId: displaySourceId || actualSourceId,
+    actualSourceId,
     sourceIp,
     sourcePort,
-    sourceEndpoint: sourceIp ? `${sourceIp}${sourcePort ? `:${sourcePort}` : ''}` : '',
-    edgeLabel: sourceDisplay?.edgeLabel ?? (sourceIp ? `EDGE ${sourceIp}` : 'EDGE'),
-    sourceTitle: sourceDisplay?.alias || sourceDisplay?.edgeLabel || sourceIp || shortId(sourceId) || 'Unknown edge',
-    sourceAlias: sourceDisplay?.alias ?? '',
+    sourceEndpoint,
+    actualSourceEndpoint,
+    edgeLabel: displaySourceDisplay?.edgeLabel ?? buildEdgeLabel(displaySourceId, displaySourceNode, nodeDisplayMap, sourceIp),
+    sourceTitle: displaySourceDisplay?.alias || automaticSourceLabel || displaySourceDisplay?.edgeLabel || sourceIp || shortId(displaySourceId || actualSourceId) || 'Unknown edge',
+    sourceAlias: displaySourceDisplay?.alias ?? automaticSourceLabel,
     locationLabel,
     descriptionLabel: nested?.description ?? normalizeDescription(event?.payload?.description),
     publisherId: nested?.publisherId ?? '',
-    viaFailover: nested?.viaFailover ?? false,
-    intendedEdgeLabel,
+    viaFailover: (nested?.viaFailover ?? false) || viaDifferentNode,
+    intendedEdgeLabel: viaDifferentNode
+      ? (displaySourceDisplay?.edgeLabel ?? buildEdgeLabel(displaySourceId, displaySourceNode, nodeDisplayMap, sourceIp))
+      : '',
+    transitEdgeLabel: viaDifferentNode
+      ? (actualSourceDisplay?.edgeLabel ?? buildEdgeLabel(actualSourceId, actualSourceNode, nodeDisplayMap, actualSourceIp))
+      : '',
     wasQueued: nested?.wasQueued ?? false,
     queueDelayMs,
   };

@@ -182,6 +182,13 @@ static void build_event_message(EdgeContext* ctx, const char* topic,
     std::strncpy(msg.route.original_node, ctx->edge_id, UUID_LEN - 1);
     msg.route.original_node[UUID_LEN - 1] = '\0';
 
+    char origin_edge_id[UUID_LEN] = {};
+    if (extract_nested_event_origin_node(payload, origin_edge_id, sizeof(origin_edge_id)))
+    {
+        std::strncpy(msg.route.original_node, origin_edge_id, UUID_LEN - 1);
+        msg.route.original_node[UUID_LEN - 1] = '\0';
+    }
+
     std::strncpy(msg.route.prev_hop, ctx->edge_id, UUID_LEN - 1);
     msg.route.prev_hop[UUID_LEN - 1] = '\0';
 
