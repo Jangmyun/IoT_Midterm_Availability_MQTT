@@ -235,10 +235,18 @@ def log_dir(tmp_path):
     return tmp_path
 
 
+def _clear_core_id_file(port: int = MQTT_PORT) -> None:
+    """테스트 환경에서 core_id 파일 충돌 방지용 정리 헬퍼.
+    실제 배포에서는 Core 마다 별도 mosquitto 포트를 사용하므로 파일이 겹치지 않으나,
+    테스트 환경에서는 Active/Backup 이 동일 포트를 공유해 UUID 충돌이 발생할 수 있다."""
+    Path(f"/tmp/core_id_{port}.txt").unlink(missing_ok=True)
+
+
 @pytest.fixture
 def active_core(tmp_path):
     """Active Core 기동 픽스처. 시작 전 retained CT 클리어로 stale 버전 충돌 방지."""
     _clear_retained()
+    _clear_core_id_file()  # 테스트 격리: 이전 테스트 UUID 오염 방지
     log = tmp_path / "core_active.log"
     with run_proc(
         CORE_BINARY, MQTT_HOST, str(MQTT_PORT),
@@ -252,7 +260,10 @@ def active_core(tmp_path):
 
 @pytest.fixture
 def backup_core(tmp_path, active_core):
-    """Backup Core 기동 픽스처 (Active 기동 후 사용)."""
+    """Backup Core 기동 픽스처 (Active 기동 후 사용).
+    테스트 환경에서 Active 와 Backup 이 동일 broker 포트를 공유하므로
+    core_id 파일 충돌을 방지하기 위해 파일 삭제 후 Backup 을 기동한다."""
+    _clear_core_id_file()  # Active 가 남긴 파일 삭제 → Backup 이 새 UUID 생성
     log = tmp_path / "core_backup.log"
     with run_proc(
         CORE_BINARY, MQTT_HOST, str(MQTT_PORT), MQTT_HOST, str(MQTT_PORT),
