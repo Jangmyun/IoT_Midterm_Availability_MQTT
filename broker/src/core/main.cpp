@@ -421,6 +421,12 @@ static void on_message(struct mosquitto* mosq, void* userdata,
         mosquitto_publish(mosq, nullptr, msg->topic,
             msg->payloadlen, msg->payload, 1, false);
         printf("[core] event forwarded: %s  (msg_id=%.8s)\n", msg->topic, evt.msg_id);
+        // R-02: application-level ACK → Edge의 pending_msgs에서 해당 메시지 제거
+        {
+            char ack_topic[128];
+            std::snprintf(ack_topic, sizeof(ack_topic), "%s%s", TOPIC_RELAY_ACK_PREFIX, evt.msg_id);
+            mosquitto_publish(mosq, nullptr, ack_topic, 0, nullptr, 0, false);
+        }
         return;
     }
 
@@ -720,7 +726,26 @@ int main(int argc, char* argv[]) {
 
     // 1. CoreContext 초기화
     CoreContext ctx = {};
-    uuid_generate(ctx.core_id);
+    // core_id 파일 영속화: 재시작 후에도 동일 UUID 유지 (CT continuity 보장)
+    {
+        char id_path[256];
+        std::snprintf(id_path, sizeof(id_path), "/tmp/core_id_%d.txt", broker_port);
+        FILE* id_file = fopen(id_path, "r");
+        if (id_file) {
+            size_t n = fread(ctx.core_id, 1, UUID_LEN - 1, id_file);
+            ctx.core_id[n] = '\0';
+            fclose(id_file);
+            printf("[core] restored core_id from file: %.8s...\n", ctx.core_id);
+        } else {
+            uuid_generate(ctx.core_id);
+            id_file = fopen(id_path, "w");
+            if (id_file) {
+                fwrite(ctx.core_id, 1, strlen(ctx.core_id), id_file);
+                fclose(id_file);
+            }
+            printf("[core] generated new core_id: %.8s...\n", ctx.core_id);
+        }
+    }
     strncpy(ctx.core_ip, broker_host, IP_LEN - 1);
     ctx.core_port = broker_port;
     ctx.is_backup = is_backup;
@@ -783,7 +808,7 @@ int main(int argc, char* argv[]) {
     mosquitto_disconnect_callback_set(mosq, on_disconnect);
     mosquitto_reconnect_delay_set(mosq, 2, 30, false);
 
-    int rc = mosquitto_connect(mosq, broker_host, broker_port, /*keepalive=*/60);
+    int rc = mosquitto_connect(mosq, broker_host, broker_port, /*keepalive=*/10);
     if (rc != MOSQ_ERR_SUCCESS) {
         fprintf(stderr, "[core] mosquitto_connect failed: %s\n", mosquitto_strerror(rc));
         mosquitto_destroy(mosq);
@@ -822,7 +847,7 @@ int main(int argc, char* argv[]) {
                     (int)lwt_json.size(), lwt_json.c_str(), 1, false);
             }
 
-            if (mosquitto_connect(mosq_peer, active_core_ip, active_core_port, 60)
+            if (mosquitto_connect(mosq_peer, active_core_ip, active_core_port, 10)
                 == MOSQ_ERR_SUCCESS) {
                 mosquitto_loop_start(mosq_peer);
                 printf("[core/backup] peer connected to active %s:%d\n",
